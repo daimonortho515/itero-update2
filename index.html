@@ -2,10 +2,8 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="iTero管理">
-<title>iTero管理</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>歯科技工管理</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -667,9 +665,7 @@ function RecTab({db,updRec,setDb,saveLocal}){
     {view==='list'&&(list.length===0?<p className="empty">該当なし</p>:
       sub==='すべて'
         ? <AllView list={list} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>
-        : (sub==='技工物(院外)'||sub==='技工物(院内)'||sub==='複数')
-          ? list.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>)
-          : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{list.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>)}</div>
+        : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{list.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>)}</div>
     )}
   </div>;
 }
