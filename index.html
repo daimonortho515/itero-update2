@@ -667,7 +667,9 @@ function RecTab({db,updRec,setDb,saveLocal}){
     {view==='list'&&(list.length===0?<p className="empty">該当なし</p>:
       sub==='すべて'
         ? <AllView list={list} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>
-        : list.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>)
+        : (sub==='技工物(院外)'||sub==='技工物(院内)'||sub==='複数')
+          ? list.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>)
+          : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{list.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>)}</div>
     )}
   </div>;
 }
@@ -1004,12 +1006,14 @@ function DoneTab({db,setDb,saveLocal}){
     <div className="stabs">{DONE_SUBS.map(s=><button key={s} className={"stab"+(sub===s?' on':'')} onClick={()=>setSub(s)}>{s}</button>)}</div>
     <input value={q} onChange={e=>setQ(e.target.value)} placeholder="患者名・IDで検索..." style={{width:'100%',fontSize:13,padding:'8px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:'var(--surface)',color:'var(--text)',outline:'none',marginBottom:10}}/>
     <div style={{fontSize:12,color:'var(--t2)',marginBottom:12}}>完了 {list.length}件</div>
-    {list.length===0?<p className="empty">完了済みの記録はありません</p>:list.map(r=>{
+    {list.length===0?<p className="empty">完了済みの記録はありません</p>:
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+    {list.map(r=>{
       const cats=[];if(r.checks['精密検査'])cats.push('精密検査');if(r.checks['最終検査'])cats.push('最終検査');r.cats.forEach(c=>{if(!cats.includes(c))cats.push(c);});
-      return <div key={r.id} className="rc" style={{borderLeft:'4px solid var(--green)'}}>
+      return <div key={r.id} className="rc" style={{borderLeft:'4px solid var(--green)',marginBottom:0}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-          <div style={{flex:1}}>
-            <div className="rn" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div className="rn" style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
               <span>{r.patient_name}</span>
               <StaffBadge staff={r.staff}/>
               {r.old_flag&&<Bdg cls="b-warn">旧</Bdg>}
@@ -1018,15 +1022,16 @@ function DoneTab({db,setDb,saveLocal}){
             <div className="rm">{r.patient_id}　{r.date}</div>
             <div style={{marginTop:4,display:'flex',flexWrap:'wrap',gap:4}}>{cats.map(c=>{const col=CAT_COLORS[c]||'#9b948e';return <span key={c} style={{fontSize:10,padding:'1px 6px',borderRadius:8,border:'1px solid '+col+'40',color:col,fontWeight:600}}>{c}</span>;})}</div>
             {r.techs.length>0&&<div className="rm">{r.techs.join('・')}</div>}
-            {r.setdate&&<div className="rm">📅 セット: {r.setdate}</div>}
+            {r.setdate&&<div className="rm">📅 {r.setdate}</div>}
           </div>
-          <div style={{display:'flex',flexDirection:'column',gap:6,marginLeft:8}}>
+          <div style={{display:'flex',flexDirection:'column',gap:4,marginLeft:6,flexShrink:0}}>
             <EditBtn r={r} db={db} setDb={setDb} saveLocal={saveLocal}/>
             <button className="btn btn-d" onClick={()=>del(r.id)}>削除</button>
           </div>
         </div>
       </div>;
     })}
+    </div>}
   </div>;
 }
 
@@ -1261,14 +1266,15 @@ function TodayTab({db, updRec}){
     <div style={{fontSize:13,color:'var(--t2)',marginBottom:8}}>{list.length}件</div>
     {list.length===0
       ? <p className="empty">該当する技工物はありません</p>
-      : list.map(r=>{
+      : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+        {list.map(r=>{
           const ready=r.chk_ready;
           const dLabel=dayLabel(r.setdate);
           const dColor=r.setdate===date1?'#2563c8':r.setdate===date2?'#0d9488':'#7c3aed';
-          return <div key={r.id} className="rc" style={{borderLeft:'4px solid '+(ready?'var(--green)':'var(--amber)'),opacity:ready?0.7:1}}>
+          return <div key={r.id} className="rc" style={{borderLeft:'4px solid '+(ready?'var(--green)':'var(--amber)'),opacity:ready?0.7:1,marginBottom:0}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-              <div style={{flex:1}}>
-                <div className="rn" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div className="rn" style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
                   <span>{r.patient_name}</span>
                   <StaffBadge staff={r.staff}/>
                   {r.chk_isogu&&<Bdg cls="b-org">🚨急ぎ</Bdg>}
@@ -1277,13 +1283,14 @@ function TodayTab({db, updRec}){
                 <div className="rm">{r.techs.join('・')||'—'}</div>
                 <div className="rm" style={{color:dColor,fontWeight:700}}>📅 {dLabel}　{r.setdate}</div>
               </div>
-              <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13,cursor:'pointer',padding:'6px 12px',background:ready?'var(--gbg)':'var(--s2)',border:'1px solid '+(ready?'#bbf7d0':'var(--border)'),borderRadius:'var(--rs)',color:ready?'var(--gt)':'var(--t2)',whiteSpace:'nowrap',marginLeft:8}}>
+              <label style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4,fontSize:12,cursor:'pointer',padding:'6px 8px',background:ready?'var(--gbg)':'var(--s2)',border:'1px solid '+(ready?'#bbf7d0':'var(--border)'),borderRadius:'var(--rs)',color:ready?'var(--gt)':'var(--t2)',whiteSpace:'nowrap',marginLeft:6,flexShrink:0}}>
                 <input type="checkbox" checked={!!ready} onChange={e=>updReady(r.id,e.target.checked)} style={{width:16,height:16,accentColor:'var(--green)',cursor:'pointer'}}/>
-                {ready?'用意済':'用意'}
+                {ready?'済':'用意'}
               </label>
             </div>
           </div>;
-        })
+        })}
+        </div>
     }
   </div>;
 }
