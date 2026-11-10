@@ -147,6 +147,7 @@ body{font-family:'Hiragino Sans','Yu Gothic',sans-serif;color:var(--text);font-s
 .rc{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px;}
 .rc.icard{border-left:4px solid var(--org);}
 .rc.print-sel{border:2px solid #1e40af;background:#eff6ff;}
+.rc.done-card{background:#f0fdf4;border-left:4px solid #16a34a;}
 .rn{font-size:18px;font-weight:700;}
 .rm{font-size:14px;color:var(--t2);margin-top:4px;}
 .rchks{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
@@ -908,32 +909,58 @@ function printOrderList(db) {
 // ---- NamePlate Print ----
 function plateCss() {
   return `
-  @page { size: 90mm 55mm; margin: 0; }
-  body { margin: 0; padding: 4mm; font-family: 'Hiragino Sans','Yu Gothic',sans-serif; background: #fff; display:flex; flex-wrap:wrap; gap:4mm; }
+  @page { size: A4 portrait; margin: 10mm; }
+  body { margin: 0; padding: 0; font-family: 'Hiragino Sans','Yu Gothic',sans-serif; background: #fff; display:grid; grid-template-columns: repeat(3,1fr); gap: 6mm; }
   .plate {
-    width: 90mm; height: 55mm; box-sizing: border-box;
+    width: 100%; aspect-ratio: 4/3; box-sizing: border-box;
     padding: 5mm 6mm; border: 2px solid #1e40af;
     display: flex; flex-direction: column; justify-content: space-between;
     page-break-inside: avoid; break-inside: avoid;
   }
-  .header { font-size: 9pt; color: #1e40af; font-weight: 700; border-bottom: 1px solid #93c5fd; padding-bottom: 2mm; margin-bottom: 2mm; }
-  .name { font-size: 18pt; font-weight: 900; color: #1e3a8a; letter-spacing: 1px; }
+  .header { font-size: 8pt; color: #1e40af; font-weight: 700; border-bottom: 1px solid #93c5fd; padding-bottom: 1.5mm; margin-bottom: 2mm; }
+  .name { font-size: 20pt; font-weight: 900; color: #1e3a8a; letter-spacing: 1px; }
   .id { font-size: 9pt; color: #64748b; margin-top: 1mm; }
-  .tech { font-size: 10pt; font-weight: 700; color: #374151; margin-top: 2mm; background: #eff6ff; padding: 1mm 3mm; border-radius: 3mm; border-left: 3px solid #3b82f6; }
-  .footer { display: flex; justify-content: space-between; align-items: flex-end; }
+  .tech { font-size: 13pt; font-weight: 700; color: #1e40af; margin-top: 2.5mm; background: #eff6ff; padding: 1.5mm 3mm; border-radius: 3mm; border-left: 3px solid #3b82f6; line-height: 1.6; }
+  .footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 3mm; }
   .date-label { font-size: 8pt; color: #64748b; }
-  .date-val { font-size: 11pt; font-weight: 700; color: #1e40af; }
+  .date-val { font-size: 13pt; font-weight: 700; color: #1e40af; }
   .reg { font-size: 7pt; color: #9ca3af; text-align: right; }`;
 }
-function plateHtml(r) {
-  const techs = (r.techs||[]).join(' / ') || '—';
+// 技工物をネームプレートのグループに分ける
+// ・上顎BLR + 下顎BLR → 1枚
+// ・上顎クリアリテーナー + 下顎クリアリテーナー → 1枚
+// ・それ以外は1枚ずつ
+function groupTechsForPlate(techs) {
+  const BLR_PAIR  = ['上顎BLR','下顎BLR'];
+  const CLER_PAIR = ['上顎クリアリテーナー','下顎クリアリテーナー'];
+  const used = new Set();
+  const groups = [];
+  // BLRペア
+  if(techs.includes('上顎BLR')||techs.includes('下顎BLR')){
+    const g = BLR_PAIR.filter(t=>techs.includes(t));
+    g.forEach(t=>used.add(t));
+    if(g.length) groups.push(g);
+  }
+  // クリアペア
+  if(techs.includes('上顎クリアリテーナー')||techs.includes('下顎クリアリテーナー')){
+    const g = CLER_PAIR.filter(t=>techs.includes(t));
+    g.forEach(t=>used.add(t));
+    if(g.length) groups.push(g);
+  }
+  // 残りは1枚ずつ
+  techs.forEach(t=>{ if(!used.has(t)) groups.push([t]); });
+  return groups;
+}
+
+function makePlateHtml(r, techGroup) {
+  const techStr = techGroup.join(' / ');
   const setdate = r.setdate && r.setdate !== '未定' ? r.setdate : '未定';
   return `<div class="plate">
   <div>
     <div class="header">🦷 歯科技工物ネームプレート</div>
     <div class="name">${r.patient_name||'—'}</div>
     <div class="id">患者ID: ${r.patient_id||'—'}</div>
-    <div class="tech">${techs}</div>
+    <div class="tech">${techStr}</div>
   </div>
   <div class="footer">
     <div>
@@ -944,12 +971,18 @@ function plateHtml(r) {
   </div>
 </div>`;
 }
+
 function getPrintedIds() { try { return JSON.parse(localStorage.getItem('printed_ids')||'{}'); } catch { return {}; } }
 function markPrinted(ids) { try { const d={...getPrintedIds()};ids.forEach(id=>{d[id]=today();});localStorage.setItem('printed_ids',JSON.stringify(d)); } catch {} }
 function clearPrinted(id) { try { const d=getPrintedIds();delete d[id];localStorage.setItem('printed_ids',JSON.stringify(d)); } catch {} }
 
 function printPlates(records, onDone) {
-  const body = records.map(plateHtml).join('\n');
+  const plates = [];
+  records.forEach(r => {
+    const techs = r.techs && r.techs.length ? r.techs : ['—'];
+    groupTechsForPlate(techs).forEach(g => plates.push(makePlateHtml(r, g)));
+  });
+  const body = plates.join('\n');
   const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>ネームプレート</title><style>${plateCss()}</style></head><body>${body}</body></html>`;
   const w = window.open('','_blank','width=500,height=400');
   w.document.write(html);
@@ -964,7 +997,12 @@ function RCard({r,sub,db,setDb,saveLocal,updTC,updChk,updField,printSel,togPrint
   const tc=r.tc||{};
   const isTech=sub==='技工物(院外)'||sub==='技工物(院内)'||sub==='すべて'||sub==='複数';
   const isChecked=!!(printSel&&printSel[r.id]);
-  return <div className={"rc"+(r.chk_isogu?' icard':'')+(isChecked?' print-sel':'')}>
+  // 装置完成判定：院内→全部souchi済み、院外→全部到着済み
+  const allDone = isTech && r.techs.length>0 && r.techs.every(t=>{
+    if(INHOUSE.includes(t)) return !!tc[t+':souchi'];
+    return tc[t+':hatchu']==='到着済み';
+  });
+  return <div className={"rc"+(r.chk_isogu?' icard':'')+(isChecked?' print-sel':'')+(allDone?' done-card':'')}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
       <div style={{flex:1}}>
         <div className="rn" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -1003,7 +1041,7 @@ function RCard({r,sub,db,setDb,saveLocal,updTC,updChk,updField,printSel,togPrint
         return <div key={t} className="tb">
           <div className="tbn">{t} {isIn?<Bdg cls="b-pur" style={{fontSize:10}}>院内</Bdg>:<Bdg cls="b-gray" style={{fontSize:10}}>院外</Bdg>}</div>
           <div className="rchks">
-            <CLabel label="模型作製済み〔井上〕" checked={!!tc[t+':mokei']} onChange={v=>updTC(r.id,t+':mokei',v)}/>
+            <CLabel label="模型作製済み" checked={!!tc[t+':mokei']} onChange={v=>updTC(r.id,t+':mokei',v)}/>
             {isIn
               ? <CLabel label="装置作製済み" checked={!!tc[t+':souchi']} onChange={v=>updTC(r.id,t+':souchi',v)}/>
               : <div><div style={{fontSize:10,color:'var(--t3)',marginBottom:4}}>発注ステータス</div>
