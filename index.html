@@ -146,6 +146,7 @@ body{font-family:'Hiragino Sans','Yu Gothic',sans-serif;color:var(--text);font-s
 .fb.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700;box-shadow:0 3px 10px rgba(37,99,200,0.4);transform:scale(1.03);}
 .rc{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px;}
 .rc.icard{border-left:4px solid var(--org);}
+.rc.print-sel{border:2px solid #1e40af;background:#eff6ff;}
 .rn{font-size:18px;font-weight:700;}
 .rm{font-size:14px;color:var(--t2);margin-top:4px;}
 .rchks{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
@@ -566,7 +567,19 @@ function RecTab({db,updRec,setDb,saveLocal}){
   const [q,setQ]=useState('');
   const [fSt,setFSt]=useState('');
   const [F,setF]=useState({});
+  const [printSel,setPrintSel]=useState({});
+  const [printedIds,setPrintedIds]=useState(getPrintedIds);
+  const [hidePrinted,setHidePrinted]=useState(false);
   const togF=k=>setF(f=>({...f,[k]:!f[k]}));
+  const togPrint=id=>setPrintSel(s=>({...s,[id]:!s[id]}));
+  const selCount=Object.values(printSel).filter(Boolean).length;
+  const doPrint=(records)=>{
+    printPlates(records,()=>{
+      markPrinted(records.map(r=>r.id));
+      setPrintedIds(getPrintedIds());
+      setPrintSel({});
+    });
+  };
 
   const sub=subs.includes('すべて')?'すべて':subs.length===1?subs[0]:'複数';
   const matchSub=r=>{
@@ -593,6 +606,7 @@ function RecTab({db,updRec,setDb,saveLocal}){
     if(F.iso&&!r.chk_isogu)return false;
     if(F.week){const{s,e}=weekRange();if(!r.setdate||r.setdate<s||r.setdate>e)return false;}
     if(F.nosetdate){if(r.setdate&&r.setdate!=='未定'&&r.setdate!=='')return false;}
+    if(F.noprint){if(printedIds[r.id])return false;}
     if(F.mokei){const tc=r.tc;if(!r.techs.some(t=>!tc[t+':mokei']))return false;}
     if(F.souchi){const tc=r.tc;if(!r.techs.filter(t=>INHOUSE.includes(t)).some(t=>!tc[t+':souchi']))return false;}
     if(F.mizen){const tc=r.tc;if(!r.techs.filter(t=>!INHOUSE.includes(t)).some(t=>{const v=tc[t+':hatchu']||'未発注';return v==='未発注';}))return false;}
@@ -624,7 +638,17 @@ function RecTab({db,updRec,setDb,saveLocal}){
   const FB=({k,label,os})=>{ const on=F[k]; return <button className={"fb"+(on?' on':'')} style={on?{}:(os||{})} onClick={()=>togF(k)}>{label}</button>; };
   const isKanSub=subs.some(s=>s==='技工物(院外)'||s==='技工物(院内)'||s==='再iTero'||s==='追加アライナー')&&subs.length===1;
 
+  // 発注対象カウント（模型済み＆未発注）
+  const orderCount = db.reduce((n,r)=>{
+    if(isRecordDone(r)||r.hidden) return n;
+    const tc=r.tc||{};
+    return n + r.techs.filter(t=>!INHOUSE.includes(t)&&tc[t+':mokei']&&(!tc[t+':hatchu']||tc[t+':hatchu']==='未発注')).length;
+  },0);
+
   return <div>
+    {orderCount>0&&<button onClick={()=>printOrderList(db)} style={{display:'flex',alignItems:'center',gap:6,marginBottom:10,fontSize:13,padding:'7px 18px',borderRadius:20,border:'none',background:'#0d9488',color:'#fff',cursor:'pointer',fontWeight:700,boxShadow:'0 2px 8px rgba(13,148,136,0.3)'}}>
+      📋 発注リスト印刷　<span style={{background:'#fff',color:'#0d9488',borderRadius:20,padding:'0 8px',fontWeight:900,fontSize:13}}>{orderCount}件</span>
+    </button>}
     <div className="stabs">{SUBS.map(s=>{
         const isOn=subs.includes(s);
         const isTechBtn=s==='技工物(院外)'||s==='技工物(院内)';
@@ -654,6 +678,7 @@ function RecTab({db,updRec,setDb,saveLocal}){
       <FB k="sort" label="📅 セット日順"/><FB k="nosetdate" label="📅 セット日未入力" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="week" label="📌 今週"/><FB k="iso" label="🚨 急ぎ" os={{color:'var(--ot)',borderColor:'#fed7aa'}}/>
       <FB k="mokei" label="📦 模型未" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="souchi" label="🔧 装置未" os={{color:'var(--pt)',borderColor:'#c4b5fd'}}/><FB k="mizen" label="📮 未発注" os={{color:'var(--amt)',borderColor:'#fde68a'}}/>
         <FB k="dekisidai" label="📞 出来次第" os={{color:'var(--pt)',borderColor:'#c4b5fd'}}/>
+        <FB k="noprint" label="🏷️ 名札未印刷" os={{color:'#d97706',borderColor:'#fde68a'}}/>
     </div>}
     {sub==='再iTero'&&view==='list'&&<div className="fbtns"><FB k="it_miz" label="📮 未発注" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="it_chu" label="🔄 発注済み" os={{color:'var(--amt)',borderColor:'#fde68a'}}/><FB k="it_ok" label="✅ 到着" os={{color:'var(--gt)',borderColor:'#bbf7d0'}}/></div>}
     {sub==='追加アライナー'&&view==='list'&&<div className="fbtns"><FB k="ar_miz" label="📋 未作成" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="ar_inc" label="👨‍⚕️ 院長作成中" os={{color:'var(--amt)',borderColor:'#fde68a'}}/><FB k="ar_ok" label="✅ 到着" os={{color:'var(--gt)',borderColor:'#bbf7d0'}}/><FB k="ar_ren" label="📞 患者連絡済み" os={{color:'var(--pt)',borderColor:'#c4b5fd'}}/></div>}
@@ -662,11 +687,20 @@ function RecTab({db,updRec,setDb,saveLocal}){
     {view==='kanban'&&subs.length===1&&subs[0]==='技工物(院内)'&&<InhouKanban list={list} updTC={updTC}/>}
     {view==='kanban'&&sub==='追加アライナー'&&<ArKanban list={list} updTC={updTC}/>}
     {view==='kanban'&&sub==='再iTero'&&<IteroKanban list={list} updTC={updTC}/>}
-    {view==='list'&&(list.length===0?<p className="empty">該当なし</p>:
+    {isTechOnly&&view==='list'&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+      <button onClick={()=>setHidePrinted(h=>!h)} style={{fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid '+(hidePrinted?'#1e40af':'var(--border)'),background:hidePrinted?'#eff6ff':'var(--surface)',color:hidePrinted?'#1e40af':'var(--t2)',cursor:'pointer',fontWeight:hidePrinted?700:400}}>
+        {hidePrinted?'✅ 印刷済みを非表示':'🔲 印刷済みを表示中'}
+      </button>
+      {selCount>0&&<><span style={{fontSize:13,color:'#1e40af',fontWeight:700}}>🏷️ {selCount}件選択中</span>
+      <button onClick={()=>doPrint(list.filter(r=>printSel[r.id]))} style={{fontSize:13,padding:'5px 16px',borderRadius:20,border:'none',background:'#1e40af',color:'#fff',cursor:'pointer',fontWeight:700}}>まとめて印刷</button>
+      <button onClick={()=>{const all={};list.forEach(r=>{all[r.id]=true;});setPrintSel(all);}} style={{fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid #93c5fd',background:'#fff',color:'#1e40af',cursor:'pointer'}}>全選択</button>
+      <button onClick={()=>setPrintSel({})} style={{fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid #cbd5e1',background:'#fff',color:'#64748b',cursor:'pointer'}}>解除</button></>}
+    </div>}
+    {view==='list'&&(()=>{const disp=hidePrinted&&isTechOnly?list.filter(r=>!printedIds[r.id]):list;return disp.length===0?<p className="empty">該当なし</p>:
       sub==='すべて'
-        ? <AllView list={list} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>
-        : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{list.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>)}</div>
-    )}
+        ? <AllView list={disp} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>
+        : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{disp.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField} printSel={printSel} togPrint={isTechOnly?togPrint:null} printedDate={printedIds[r.id]} onClearPrinted={()=>{clearPrinted(r.id);setPrintedIds(getPrintedIds());}}/>)}</div>
+    ;})()}
   </div>;
 }
 
@@ -786,13 +820,151 @@ function AllView({list, db, setDb, saveLocal}){
   </div>;
 }
 
+// ---- 発注リスト印刷 ----
+const ASO_TECHS  = ['上顎BLR','下顎BLR'];
+const KUBO_TECHS = ['上顎Begg','下顎Begg','L/A','フック付きL/A','スプリント'];
+
+function printOrderList(db) {
+  const rows = [];
+  db.forEach(r => {
+    if(isRecordDone(r)||r.hidden) return;
+    const tc = r.tc||{};
+    r.techs.forEach(t => {
+      if(INHOUSE.includes(t)) return;
+      if(!tc[t+':mokei']) return;
+      if(tc[t+':hatchu'] && tc[t+':hatchu']!=='未発注') return;
+      const vendor = ASO_TECHS.includes(t)?'ASO':KUBO_TECHS.includes(t)?'久保':'その他';
+      const mokeiDate = tc[t+':mokei_date'] || r.date || '';
+      const sd = r.setdate&&r.setdate!=='未定' ? r.setdate.slice(5).replace('-','/') : '未定';
+      rows.push({vendor, tech:t, name:r.patient_name, id:r.patient_id, setdate:sd, mokeiDate:mokeiDate.slice(5).replace('-','/')});
+    });
+  });
+  if(!rows.length){ alert('発注対象（模型作製済み＆未発注）の技工物がありません'); return; }
+
+  const group = {ASO:[], 久保:[], その他:[]};
+  rows.forEach(r=>group[r.vendor].push(r));
+
+  const css = `
+    @page{size:A4 portrait;margin:12mm;}
+    body{font-family:'Hiragino Sans','Yu Gothic',sans-serif;color:#1e293b;margin:0;padding:0;}
+    .page{page-break-after:always;}
+    .page:last-child{page-break-after:auto;}
+    h2{font-size:13pt;font-weight:900;padding-bottom:7px;margin:0 0 14px;display:flex;justify-content:space-between;align-items:center;}
+    .aso h2{color:#1e40af;border-bottom:3px solid #1e40af;}
+    .kubo h2{color:#0d9488;border-bottom:3px solid #0d9488;}
+    .other h2{color:#64748b;border-bottom:3px solid #64748b;}
+    .cnt{border-radius:20px;padding:1px 12px;font-size:10pt;font-weight:900;border:2px solid currentColor;margin-left:8px;}
+    .meta{font-size:9pt;color:#64748b;font-weight:400;margin-left:auto;}
+    table{border-collapse:collapse;width:100%;font-size:11pt;table-layout:fixed;}
+    th{color:#fff;padding:6px 4px;border:1px solid rgba(255,255,255,0.3);text-align:center;white-space:nowrap;}
+    .aso th{background:#1e40af;} .kubo th{background:#0d9488;} .other th{background:#64748b;}
+    td{border:1px solid #cbd5e1;padding:8px 10px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    tr:nth-child(even) td{background:#f8faff;}
+    .tate{writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;text-align:center;letter-spacing:2px;font-size:9pt;display:block;margin:0 auto;}
+    .name{font-weight:700;}
+    .chk{text-align:center;font-size:14pt;}`;
+
+  const makeTable = (cls, title, items) => {
+    if(!items.length) return '';
+    const trs = items.map((r,i)=>`<tr>
+      <td>${r.mokeiDate}</td>
+      <td>${r.id}</td>
+      <td class="name">${r.name}</td>
+      <td>${r.tech}</td>
+      <td style="text-align:center;">${r.setdate}</td>
+      <td class="chk">□</td>
+      <td></td>
+    </tr>`).join('');
+    return `<div class="page ${cls}">
+      <h2>📦 ${title} 発注リスト <span class="cnt">${items.length}件</span><span class="meta">印刷日：${new Date().toLocaleDateString('ja-JP')}</span></h2>
+      <table>
+        <colgroup>
+          <col style="width:52px"><col style="width:88px"><col><col><col style="width:68px"><col style="width:46px"><col style="width:88px">
+        </colgroup>
+        <tr>
+          <th><span class="tate">模型日</span></th>
+          <th>患者ID</th><th>患者名</th><th>技工物</th>
+          <th><span class="tate">セット日</span></th>
+          <th><span class="tate">発注✓</span></th>
+          <th><span class="tate">到着日</span></th>
+        </tr>
+        ${trs}
+      </table>
+    </div>`;
+  };
+
+  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>発注リスト</title><style>${css}</style></head><body>
+    ${makeTable('aso','ASO',group['ASO'])}
+    ${makeTable('kubo','久保さん',group['久保'])}
+    ${makeTable('other','その他',group['その他'])}
+  </body></html>`;
+
+  const w = window.open('','_blank','width=800,height=900');
+  w.document.write(html);
+  w.document.close();
+  w.onload = ()=>{ w.print(); };
+}
+
+// ---- NamePlate Print ----
+function plateCss() {
+  return `
+  @page { size: 90mm 55mm; margin: 0; }
+  body { margin: 0; padding: 4mm; font-family: 'Hiragino Sans','Yu Gothic',sans-serif; background: #fff; display:flex; flex-wrap:wrap; gap:4mm; }
+  .plate {
+    width: 90mm; height: 55mm; box-sizing: border-box;
+    padding: 5mm 6mm; border: 2px solid #1e40af;
+    display: flex; flex-direction: column; justify-content: space-between;
+    page-break-inside: avoid; break-inside: avoid;
+  }
+  .header { font-size: 9pt; color: #1e40af; font-weight: 700; border-bottom: 1px solid #93c5fd; padding-bottom: 2mm; margin-bottom: 2mm; }
+  .name { font-size: 18pt; font-weight: 900; color: #1e3a8a; letter-spacing: 1px; }
+  .id { font-size: 9pt; color: #64748b; margin-top: 1mm; }
+  .tech { font-size: 10pt; font-weight: 700; color: #374151; margin-top: 2mm; background: #eff6ff; padding: 1mm 3mm; border-radius: 3mm; border-left: 3px solid #3b82f6; }
+  .footer { display: flex; justify-content: space-between; align-items: flex-end; }
+  .date-label { font-size: 8pt; color: #64748b; }
+  .date-val { font-size: 11pt; font-weight: 700; color: #1e40af; }
+  .reg { font-size: 7pt; color: #9ca3af; text-align: right; }`;
+}
+function plateHtml(r) {
+  const techs = (r.techs||[]).join(' / ') || '—';
+  const setdate = r.setdate && r.setdate !== '未定' ? r.setdate : '未定';
+  return `<div class="plate">
+  <div>
+    <div class="header">🦷 歯科技工物ネームプレート</div>
+    <div class="name">${r.patient_name||'—'}</div>
+    <div class="id">患者ID: ${r.patient_id||'—'}</div>
+    <div class="tech">${techs}</div>
+  </div>
+  <div class="footer">
+    <div>
+      <div class="date-label">セット日</div>
+      <div class="date-val">${setdate}</div>
+    </div>
+    <div class="reg">登録日: ${r.date||'—'}</div>
+  </div>
+</div>`;
+}
+function getPrintedIds() { try { return JSON.parse(localStorage.getItem('printed_ids')||'{}'); } catch { return {}; } }
+function markPrinted(ids) { try { const d={...getPrintedIds()};ids.forEach(id=>{d[id]=today();});localStorage.setItem('printed_ids',JSON.stringify(d)); } catch {} }
+function clearPrinted(id) { try { const d=getPrintedIds();delete d[id];localStorage.setItem('printed_ids',JSON.stringify(d)); } catch {} }
+
+function printPlates(records, onDone) {
+  const body = records.map(plateHtml).join('\n');
+  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>ネームプレート</title><style>${plateCss()}</style></head><body>${body}</body></html>`;
+  const w = window.open('','_blank','width=500,height=400');
+  w.document.write(html);
+  w.document.close();
+  w.onload = () => { w.print(); if(onDone) onDone(); };
+}
+
 // ---- RCard ----
-function RCard({r,sub,db,setDb,saveLocal,updTC,updChk,updField}){
+function RCard({r,sub,db,setDb,saveLocal,updTC,updChk,updField,printSel,togPrint,printedDate,onClearPrinted}){
   const kkeys=(sub==='精密検査'||sub==='最終検査')?KENSA_CHK:[];
   const done=kkeys.filter(k=>r.checks[k]).length;
   const tc=r.tc||{};
   const isTech=sub==='技工物(院外)'||sub==='技工物(院内)'||sub==='すべて'||sub==='複数';
-  return <div className={"rc"+(r.chk_isogu?' icard':'')}>
+  const isChecked=!!(printSel&&printSel[r.id]);
+  return <div className={"rc"+(r.chk_isogu?' icard':'')+(isChecked?' print-sel':'')}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
       <div style={{flex:1}}>
         <div className="rn" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -800,6 +972,10 @@ function RCard({r,sub,db,setDb,saveLocal,updTC,updChk,updField}){
           <StaffBadge staff={r.staff}/>
           {r.old_flag&&<Bdg cls="b-warn">旧</Bdg>}
           {r.chk_isogu&&<Bdg cls="b-org">🚨急ぎ</Bdg>}
+          {printedDate&&<span style={{fontSize:11,fontWeight:700,color:'#16a34a',background:'#dcfce7',padding:'2px 8px',borderRadius:20,border:'1px solid #86efac',display:'flex',alignItems:'center',gap:4}}>
+            ✅ 印刷済 {printedDate}
+            <button onClick={e=>{e.stopPropagation();onClearPrinted();}} style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#16a34a',padding:'0 2px',lineHeight:1}}>×</button>
+          </span>}
         </div>
         <div className="rm">{r.patient_id}　{r.date}</div>
         <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:4}}>
@@ -859,6 +1035,11 @@ function RCard({r,sub,db,setDb,saveLocal,updTC,updChk,updField}){
         <input type="checkbox" checked={r.setdate==='未定'} onChange={e=>updField(r.id,'setdate',e.target.checked?'未定':'')} style={{width:14,height:14,accentColor:'var(--amber)',cursor:'pointer'}}/>
         未定
       </label>
+      {togPrint&&<label style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',padding:'4px 10px',borderRadius:20,background:isChecked?'#1e40af':'#eff6ff',border:'1px solid '+(isChecked?'#1e40af':'#93c5fd'),color:isChecked?'#fff':'#1e40af',fontWeight:600}}>
+        <input type="checkbox" checked={isChecked} onChange={()=>togPrint(r.id)} style={{accentColor:'#fff',width:14,height:14}}/>
+        🏷️ 選択
+      </label>}
+      {!togPrint&&<button onClick={()=>printPlates([r],()=>{markPrinted([r.id]);if(onClearPrinted)onClearPrinted('refresh');})} style={{marginLeft:'auto',fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid #3b82f6',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600}}>🏷️ 印刷</button>}
     </div>}
   </div>;
 }
