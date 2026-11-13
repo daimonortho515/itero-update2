@@ -33,7 +33,7 @@ const INHOUSE = ['上顎クリアリテーナー','下顎クリアリテーナ�
 const STAFF_COLOR = {
   '鈴木':  '#2563c8',
   '黒木':  '#0d9488',
-  '矢山':  '#7c3aed',
+  '西田':  '#7c3aed',
   '荒巻':  '#ea580c',
   '大津留': '#d97706',
   '浦里':  '#16a34a',
@@ -46,7 +46,7 @@ function StaffBadge({staff}){
   const col = STAFF_COLOR[staff] || '#9b948e';
   return <span style={{fontSize:13,fontWeight:700,color:col,background:col+'18',padding:'2px 9px',borderRadius:20,border:'1px solid '+col+'40'}}>{staff}</span>;
 }
-const STAFF = ['鈴木','黒木','矢山','荒巻','大津留','浦里','石田','受付','井ノ上'];
+const STAFF = ['黒木','荒巻','大津留','浦里','石田','西田','鈴木','受付','井ノ上'];
 const TECHS = ['上顎BLR','下顎BLR','上顎クリアリテーナー','下顎クリアリテーナー','上顎Begg','下顎Begg','L/A','フック付きL/A','スプリント','バイトプレート','その他'];
 const CATS = ['技工物','追加アライナー','再iTero','その他'];
 const KENSA_CHK = ['検査送信','orthocom','backup'];
@@ -625,7 +625,7 @@ function RecTab({db,updRec,setDb,saveLocal}){
     if(F.ks_suz&&r.checks['チェック鈴木'])return false;
     return true;
   });
-  const isTechOnly=subs.every(s=>s==='技工物(院外)'||s==='技工物(院内)');
+  const isTechOnly=subs.every(s=>s==='技工物(院外)'||s==='技工物(院内)')||subs.includes('技工物(院外)')||subs.includes('技工物(院内)');
   if(F.sort){
     list=[...list].sort((a,b)=>{ if(!a.setdate&&!b.setdate)return 0;if(!a.setdate)return 1;if(!b.setdate)return-1;return a.setdate.localeCompare(b.setdate); });
   } else if(isTechOnly){
@@ -690,7 +690,7 @@ function RecTab({db,updRec,setDb,saveLocal}){
     {view==='kanban'&&sub==='再iTero'&&<IteroKanban list={list} updTC={updTC}/>}
     {isTechOnly&&view==='list'&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
       <button onClick={()=>setHidePrinted(h=>!h)} style={{fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid '+(hidePrinted?'#1e40af':'var(--border)'),background:hidePrinted?'#eff6ff':'var(--surface)',color:hidePrinted?'#1e40af':'var(--t2)',cursor:'pointer',fontWeight:hidePrinted?700:400}}>
-        {hidePrinted?'✅ 印刷済みを非表示':'🔲 印刷済みを表示中'}
+        {hidePrinted?'✅ 印刷済みを非表示中':'🔲 印刷済みも表示する'}
       </button>
       {selCount>0&&<><span style={{fontSize:13,color:'#1e40af',fontWeight:700}}>🏷️ {selCount}件選択中</span>
       <button onClick={()=>doPrint(list.filter(r=>printSel[r.id]))} style={{fontSize:13,padding:'5px 16px',borderRadius:20,border:'none',background:'#1e40af',color:'#fff',cursor:'pointer',fontWeight:700}}>まとめて印刷</button>
@@ -700,7 +700,7 @@ function RecTab({db,updRec,setDb,saveLocal}){
     {view==='list'&&(()=>{const disp=hidePrinted&&isTechOnly?list.filter(r=>!printedIds[r.id]):list;return disp.length===0?<p className="empty">該当なし</p>:
       sub==='すべて'
         ? <AllView list={disp} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>
-        : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{disp.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField} printSel={printSel} togPrint={isTechOnly?togPrint:null} printedDate={printedIds[r.id]} onClearPrinted={()=>{clearPrinted(r.id);setPrintedIds(getPrintedIds());}}/>)}</div>
+        : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{disp.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField} printSel={printSel} togPrint={isTechOnly&&!hidePrinted?togPrint:null} printedDate={printedIds[r.id]} onClearPrinted={()=>{clearPrinted(r.id);setPrintedIds(getPrintedIds());}}/>)}</div>
     ;})()}
   </div>;
 }
@@ -912,7 +912,7 @@ function plateCss() {
   @page { size: A4 portrait; margin: 10mm; }
   body { margin: 0; padding: 0; font-family: 'Hiragino Sans','Yu Gothic',sans-serif; background: #fff; display:grid; grid-template-columns: repeat(3,1fr); gap: 6mm; }
   .plate {
-    width: 100%; aspect-ratio: 4/3; box-sizing: border-box;
+    width: 100%; aspect-ratio: 5/2; box-sizing: border-box;
     padding: 5mm 6mm; border: 2px solid #1e40af;
     display: flex; flex-direction: column; justify-content: space-between;
     page-break-inside: avoid; break-inside: avoid;
@@ -957,7 +957,6 @@ function makePlateHtml(r, techGroup) {
   const setdate = r.setdate && r.setdate !== '未定' ? r.setdate : '未定';
   return `<div class="plate">
   <div>
-    <div class="header">🦷 歯科技工物ネームプレート</div>
     <div class="name">${r.patient_name||'—'}</div>
     <div class="id">患者ID: ${r.patient_id||'—'}</div>
     <div class="tech">${techStr}</div>
@@ -983,7 +982,7 @@ function printPlates(records, onDone) {
     groupTechsForPlate(techs).forEach(g => plates.push(makePlateHtml(r, g)));
   });
   const body = plates.join('\n');
-  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>ネームプレート</title><style>${plateCss()}</style></head><body>${body}</body></html>`;
+  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>印刷</title><style>${plateCss()}</style></head><body>${body}</body></html>`;
   const w = window.open('','_blank','width=500,height=400');
   w.document.write(html);
   w.document.close();
@@ -1149,7 +1148,7 @@ function InhouKanban({list,updTC}){
     const key=r.tc[t+':souchi']?'作製済み':'未作製';
     cols[key].push({r,t});
   }));
-  const INHOUSE_STAFF=['井ノ上','鈴木','黒木','矢山','荒巻','大津留','浦里','石田','受付'];
+  const INHOUSE_STAFF=['井ノ上','黒木','荒巻','大津留','浦里','石田','西田','鈴木','受付'];
   return <div>
     <div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>タップで切り替え・セット日順</div>
     <div className="kanban">{COLS.map(col=>{
