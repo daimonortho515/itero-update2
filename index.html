@@ -1,1 +1,1654 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>歯科技工管理</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
 
+const SB_URL = 'https://jzrxjobwkgafwwbmcdzu.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp6cnhqb2J3a2dhZnd3Ym1jZHp1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2NzE0MjQsImV4cCI6MjA5MjI0NzQyNH0.dbpOuF0-6PKhR4yG6dyOREhiQgXnEJ-Ozhf4a-ia_sg';
+const SB_H = { 'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Prefer':'return=representation' };
+
+async function sbFetch(path, method, body) {
+  try {
+    const r = await fetch(SB_URL+'/rest/v1/'+path, { method:method||'GET', headers:SB_H, body:body?JSON.stringify(body):null });
+    if (!r.ok) throw new Error(await r.text());
+    return method==='DELETE' ? null : r.json();
+  } catch(e) { console.warn('SB:', e.message); return null; }
+}
+
+function jp(v,d) { if(Array.isArray(v)) return v; try { return JSON.parse(v)||d; } catch { return d; } }
+function today() { return new Date().toISOString().slice(0,10); }
+function ym() { return new Date().toISOString().slice(0,7); }
+
+const INHOUSE = ['上顎クリアリテーナー','下顎クリアリテーナー','バイトプレート'];
+const STAFF_COLOR = {
+  '鈴木':  '#2563c8',
+  '黒木':  '#0d9488',
+  '西田':  '#7c3aed',
+  '荒巻':  '#ea580c',
+  '大津留': '#d97706',
+  '浦里':  '#16a34a',
+  '石田':  '#e11d48',
+  '受付':  '#6b6660',
+  '井ノ上': '#0284c7',
+};
+function StaffBadge({staff}){
+  if(!staff) return null;
+  const col = STAFF_COLOR[staff] || '#9b948e';
+  return <span style={{fontSize:13,fontWeight:700,color:col,background:col+'18',padding:'2px 9px',borderRadius:20,border:'1px solid '+col+'40'}}>{staff}</span>;
+}
+const STAFF = ['黒木','荒巻','大津留','浦里','石田','西田','鈴木','受付','井ノ上'];
+const TECHS = ['上顎BLR','下顎BLR','上顎クリアリテーナー','下顎クリアリテーナー','上顎Begg','下顎Begg','L/A','フック付きL/A','スプリント','バイトプレート','その他'];
+const CATS = ['技工物','追加アライナー','再iTero','その他'];
+const KENSA_CHK = ['検査送信','orthocom','backup'];
+const KENSA_LBL = { '検査送信':'検査送信','orthocom':'orthocom','backup':'back up' };
+const CHK_COL = { 'チェック鈴木':'chk_suzuki','検査送信':'chk_kensashin','orthocom':'chk_orthocom','backup':'chk_backup' };
+const CAT_COLORS = { '精密検査':'#3b82f6','最終検査':'#0d9488','技工物':'#ea580c','追加アライナー':'#7c3aed','再iTero':'#d97706' };
+
+function mapRec(r) {
+  return { ...r,
+    cats: jp(r.cats,[]), techs: jp(r.techs,[]), tc: jp(r.tech_checks||r.tc,{}),
+    checks: { '精密検査':!!r.chk_seimitsu,'最終検査':!!r.chk_saishuu,'チェック鈴木':!!r.chk_suzuki,'検査送信':!!r.chk_kensashin,'orthocom':!!r.chk_orthocom,'backup':!!r.chk_backup },
+    chk_ready: !!r.chk_ready,
+    chk_was_mik: !!r.chk_was_mik,
+    hidden: !!r.hidden
+  };
+}
+
+function isRecordDone(r) {
+  if(!r||!r.cats) return false;
+  const tc = r.tc||{};
+  if (r.cats.includes('技工物')) {
+    if (!r.techs.length) return false;
+    // セット日の翌日以降なら完了
+    if (r.setdate && r.setdate !== '未定') {
+      const setdateNext = new Date(r.setdate);
+      setdateNext.setDate(setdateNext.getDate()+1);
+      if (new Date() >= setdateNext) return true;
+    }
+    const outTechs = r.techs.filter(t=>!INHOUSE.includes(t));
+    const inTechs  = r.techs.filter(t=> INHOUSE.includes(t));
+    // 院外：到着済みかつ到着日から1ヶ月経過
+    const outDone = outTechs.every(t=>{
+      const v=tc[t+':hatchu']||'未発注';
+      if(v==='出来次第') return false;
+      if(v!=='到着済み'&&v!=='到着') return false;
+      const arrivedAt=tc[t+':arrived_at'];
+      if(!arrivedAt) return false;
+      const one_month_ago = new Date(); one_month_ago.setMonth(one_month_ago.getMonth()-1);
+      return new Date(arrivedAt) < one_month_ago;
+    });
+    if(outTechs.length>0&&inTechs.length>0) return outDone;
+    if(outTechs.length>0) return outDone;
+    return false;
+  }
+  if (r.checks['精密検査']||r.checks['最終検査']) return KENSA_CHK.every(k=>r.checks[k]);
+  if (r.cats.includes('再iTero')) {
+    if(r.setdate){const d=new Date(r.setdate);d.setDate(d.getDate()+1);if(new Date()>=d)return true;}
+    return tc['itero_status']==='到着';
+  }
+  if (r.cats.includes('追加アライナー')) {
+    if(r.setdate){const d=new Date(r.setdate);d.setDate(d.getDate()+1);if(new Date()>=d)return true;}
+    return tc['ar_status']==='患者連絡済み';
+  }
+  return false;
+}
+
+const css = `
+:root{--bg:#f5f4f0;--surface:#fff;--s2:#f0ede8;--border:#e0dbd3;--b2:#ccc7be;--text:#1a1917;--t2:#6b6660;--t3:#9b948e;--accent:#2563c8;--abg:#eef3fc;--green:#16a34a;--gbg:#f0fdf4;--gt:#15803d;--amber:#d97706;--ambg:#fffbeb;--amt:#b45309;--red:#dc2626;--rbg:#fef2f2;--rt:#b91c1c;--org:#ea580c;--obg:#fff7ed;--ot:#c2410c;--pur:#7c3aed;--pbg:#f5f3ff;--pt:#6d28d9;--r:10px;--rs:6px;}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;background:var(--bg);}
+body{font-family:'Hiragino Sans','Yu Gothic',sans-serif;color:var(--text);font-size:16px;overflow:hidden;}
+#root{height:100%;height:100dvh;display:flex;flex-direction:column;}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;flex-shrink:0;}
+.topbar h1{font-size:15px;font-weight:700;}
+.sync-btn{margin-left:auto;font-size:12px;padding:5px 12px;border-radius:var(--rs);border:1px solid var(--b2);background:transparent;color:var(--t2);cursor:pointer;}
+.main-tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;}
+.main-tabs button{flex:1;min-width:55px;padding:10px 3px;font-size:11px;border:none;background:transparent;color:var(--t2);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;}
+.main-tabs button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;}
+.main-tabs button.ta{color:var(--rt);}
+.main-tabs button.ta.on{color:var(--rt);border-bottom-color:var(--red);}
+.content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px;padding-bottom:calc(40px + env(safe-area-inset-bottom,0px));}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:10px;}
+.ct{font-size:13px;font-weight:700;margin-bottom:12px;}
+.f{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;}
+.f label{font-size:11px;color:var(--t2);font-weight:500;}
+.f input,.f select{font-size:14px;border-radius:var(--rs);border:1px solid var(--b2);padding:9px 10px;background:var(--s2);color:var(--text);outline:none;-webkit-appearance:none;width:100%;}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--s2);border:1px solid var(--b2);border-radius:var(--rs);min-height:42px;}
+.chip{padding:5px 10px;border-radius:20px;font-size:12px;cursor:pointer;border:1px solid var(--b2);background:var(--surface);color:var(--t2);}
+.chip.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+.chkrow{display:flex;flex-wrap:wrap;gap:8px;}
+.ci{display:flex;align-items:center;gap:6px;padding:7px 12px;background:var(--s2);border:1px solid var(--border);border-radius:var(--rs);font-size:13px;cursor:pointer;}
+.ci input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;}
+.ci.iso{background:var(--obg);border-color:#fed7aa;color:var(--ot);}
+.btn{padding:10px 20px;border-radius:var(--rs);font-size:14px;cursor:pointer;font-weight:500;border:1px solid var(--b2);background:var(--surface);color:var(--text);}
+.btn-p{background:var(--accent);color:#fff;border-color:var(--accent);}
+.btn-d{background:var(--rbg);color:var(--rt);border-color:#fca5a5;font-size:12px;padding:5px 10px;}
+.btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;padding-bottom:20px;}
+.al{padding:10px 13px;border-radius:var(--rs);font-size:13px;margin-bottom:10px;}
+.al-ok{background:var(--gbg);color:var(--gt);border:1px solid #bbf7d0;}
+.al-err{background:var(--rbg);color:var(--rt);border:1px solid #fca5a5;}
+.stabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:14px;}
+.stab{padding:9px 20px;border-radius:20px;font-size:15px;cursor:pointer;border:2px solid var(--b2);background:var(--surface);color:var(--t2);white-space:nowrap;font-weight:500;}
+.stab.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700;box-shadow:0 3px 12px rgba(37,99,200,0.35);}
+.fbtns{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
+.fb{font-size:14px;padding:8px 16px;border-radius:20px;border:2px solid var(--b2);background:var(--surface);color:var(--t2);cursor:pointer;white-space:nowrap;font-weight:500;}
+.fb.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700;box-shadow:0 3px 10px rgba(37,99,200,0.4);transform:scale(1.03);}
+.rc{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px;}
+.rc.icard{border-left:4px solid var(--org);}
+.rc.print-sel{border:2px solid #1e40af;background:#eff6ff;}
+.rc.done-card{background:#f0fdf4;border-left:4px solid #16a34a;}
+.rn{font-size:18px;font-weight:700;}
+.rm{font-size:14px;color:var(--t2);margin-top:4px;}
+.rchks{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.rchk{display:flex;align-items:center;gap:5px;padding:6px 10px;background:var(--s2);border:1px solid var(--border);border-radius:var(--rs);font-size:12px;cursor:pointer;}
+.rchk input{width:15px;height:15px;accent-color:var(--green);}
+.rchk.done{background:var(--gbg);border-color:#bbf7d0;color:var(--gt);}
+.prog{height:4px;background:var(--border);border-radius:2px;margin-top:8px;}
+.progf{height:100%;border-radius:2px;background:var(--green);}
+.bdg{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;}
+.b-ok{background:var(--gbg);color:var(--gt);}
+.b-warn{background:var(--ambg);color:var(--amt);}
+.b-gray{background:var(--s2);color:var(--t3);}
+.b-red{background:var(--rbg);color:var(--rt);}
+.b-org{background:var(--obg);color:var(--ot);}
+.b-pur{background:var(--pbg);color:var(--pt);}
+.tb{background:var(--s2);border:1px solid var(--border);border-radius:var(--rs);padding:8px 10px;margin-top:6px;}
+.tbn{font-size:12px;font-weight:700;margin-bottom:6px;}
+.hbtns{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;margin-top:6px;}
+.hbtn{padding:5px 4px;font-size:11px;border-radius:var(--rs);border:1.5px solid var(--b2);background:transparent;color:var(--t3);cursor:pointer;text-align:center;}
+.hbtn.mizen.on{background:var(--rbg);color:var(--rt);border-color:#fca5a5;font-weight:700;}
+.hbtn.chuu.on{background:var(--ambg);color:var(--amt);border-color:#fde68a;font-weight:700;}
+.hbtn.ok.on{background:var(--gbg);color:var(--gt);border-color:#bbf7d0;font-weight:700;}
+.hbtn.extra.on{background:var(--pbg);color:var(--pt);border-color:#c4b5fd;font-weight:700;}
+.abtns{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;}
+.abtn{padding:6px 4px;font-size:11px;border-radius:var(--rs);border:1.5px solid var(--b2);background:transparent;color:var(--t3);cursor:pointer;text-align:center;}
+.ibtns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:8px;}
+.ibtn{padding:6px 4px;font-size:12px;border-radius:var(--rs);border:1.5px solid var(--b2);background:transparent;color:var(--t3);cursor:pointer;text-align:center;}
+.view-toggle{display:flex;gap:6px;margin-bottom:10px;}
+.vbtn{font-size:12px;padding:5px 12px;border-radius:20px;border:1px solid var(--b2);background:var(--surface);color:var(--t2);cursor:pointer;}
+.vbtn.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+.kanban{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;}
+.kancol{flex:0 0 calc(25% - 6px);min-width:95px;background:var(--s2);border-radius:var(--r);padding:8px;}
+.kancol2{flex:0 0 calc(50% - 4px);min-width:120px;}
+.kancol4{flex:0 0 calc(25% - 6px);min-width:90px;}
+.kan-hd{font-size:11px;font-weight:700;padding:4px 8px;border-radius:var(--rs);margin-bottom:8px;text-align:center;}
+.kan-hd.mizen{background:var(--rbg);color:var(--rt);}
+.kan-hd.chuu{background:var(--ambg);color:var(--amt);}
+.kan-hd.ok{background:var(--gbg);color:var(--gt);}
+.kan-hd.extra{background:var(--pbg);color:var(--pt);}
+.kancard{background:var(--surface);border:1px solid var(--border);border-radius:var(--rs);padding:7px 8px;margin-bottom:6px;cursor:grab;}
+.kancard:active{cursor:grabbing;opacity:0.7;transform:scale(0.98);}
+.kancard.dragging{opacity:0.4;}
+.kancol.drag-over{background:var(--abg);border:2px dashed var(--accent);}
+.kan-name{font-size:12px;font-weight:600;}
+.kan-tech{font-size:11px;color:var(--t2);margin-top:2px;}
+.kan-cnt{font-size:10px;color:var(--t3);text-align:center;margin-top:4px;}
+.sdate{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2);}
+.sdate input{font-size:12px;padding:5px 8px;border:1px solid var(--b2);border-radius:var(--rs);background:var(--s2);color:var(--text);}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px;}
+.ml{font-size:11px;color:var(--t2);margin-bottom:4px;}
+.mv{font-size:26px;font-weight:700;}
+.atag{font-size:11px;color:var(--gt);margin-left:4px;}
+.empty{text-align:center;color:var(--t3);padding:2rem 0;font-size:13px;}
+`;
+
+// ---- helpers ----
+function Bdg({cls,children}){ return <span className={"bdg "+cls}>{children}</span>; }
+function Prog({done,total}){ if(!total)return null; return <div className="prog"><div className="progf" style={{width:Math.round(done/total*100)+'%'}}/></div>; }
+function CLabel({label,checked,onChange,small}){
+  return <label className={"rchk "+(checked?'done':'')} style={small?{fontSize:11,padding:'4px 8px'}:{}}>
+    <input type="checkbox" checked={checked} onChange={e=>onChange(e.target.checked)}/>
+    {label}
+  </label>;
+}
+function EditBtn({r, db, setDb, saveLocal}){
+  const [open, setOpen] = useState(false);
+  return <>
+    <button className="btn" style={{fontSize:12,padding:'5px 10px',background:'var(--abg)',color:'var(--accent)',borderColor:'var(--accent)'}} onClick={()=>setOpen(true)}>詳細入力</button>
+    {open&&<EditModal r={r} db={db} setDb={setDb} saveLocal={saveLocal} onClose={()=>setOpen(false)}/>}
+  </>;
+}
+
+function DelBtn({id,db,setDb,saveLocal}){
+  const r=db.find(x=>x.id===id);
+  const del=()=>{
+    if(!confirm((r?r.patient_name+'のデータを':'このデータを')+'記録管理から削除しますか？\n\n確認タブには残ります。'))return;
+    const n=db.map(x=>x.id===id?{...x,hidden:true}:x);
+    setDb(n);saveLocal(n);
+    sbFetch('records?id=eq.'+id,'PATCH',{hidden:true}).catch(()=>{});
+  };
+  return <button className="btn btn-d" onClick={del}>削除</button>;
+}
+
+// ---- App ----
+function App(){
+  const [db,setDb]=useState([]);
+  const [patients,setPatients]=useState({});
+  const [tab,setTab]=useState('inp');
+  const [showMikAlert,setShowMikAlert]=useState(false);
+  const pickMikPatient=(r)=>{
+    setInputInit({pid:r.patient_id,name:r.patient_name,date:r.date,staff:r.staff||'',wasMikiroku:true,mikId:r.id});
+    setFromMik(true);
+    setShowMikAlert(false);
+    setTab('inp');
+  };
+  const switchTab=(t)=>{
+    if(t==='inp'){
+      const mikCount=db.filter(r=>r.chk_mikiroku&&!r.hidden).length;
+      if(mikCount>0) setShowMikAlert(true);
+    }
+    setTab(t);
+  };
+  const [syncing,setSyncing]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const [inputInit,setInputInit]=useState(null);
+  const [fromMik,setFromMik]=useState(false);
+  const [showReport,setShowReport]=useState(false);
+  const [notice,setNotice]=useState('');
+  const [showNoticeEdit,setShowNoticeEdit]=useState(false);
+  const [noticePw,setNoticePw]=useState('');
+  const [noticeInput,setNoticeInput]=useState('');
+  const [noticeEditMode,setNoticeEditMode]=useState(false);
+  const NOTICE_PW='daimon1020';
+
+  useEffect(()=>{
+    const saved=localStorage.getItem('itero_notice');
+    if(saved) setNotice(saved);
+    sbFetch('app_settings?key=eq.notice&limit=1').then(r=>{
+      if(r&&r.length) setNotice(r[0].value||'');
+    }).catch(()=>{});
+  },[]);
+
+  const saveNotice=async()=>{
+    localStorage.setItem('itero_notice',noticeInput);
+    setNotice(noticeInput);
+    await sbFetch('app_settings?key=eq.notice','PATCH',{value:noticeInput}).catch(()=>{});
+    setNoticeEditMode(false);setShowNoticeEdit(false);setNoticePw('');
+  };
+
+  const saveLocal=(d)=>{ try{localStorage.setItem('itero_db',JSON.stringify(d));}catch(e){} };
+
+  const loadData=useCallback(async()=>{
+    try{ const lp=localStorage.getItem('itero_pts'); if(lp)setPatients(JSON.parse(lp)); const ld=localStorage.getItem('itero_db'); if(ld){setDb(JSON.parse(ld).map(mapRec));setLoading(false);} }catch(e){}
+    try{
+      console.log('Loading from Supabase...');
+      let all=[],off=0;
+      while(true){ const r=await sbFetch('patients?limit=1000&offset='+off); if(!r||!r.length)break; all=all.concat(r); if(r.length<1000)break; off+=1000; }
+      if(all.length){ const pm={}; all.forEach(p=>pm[p.patient_id]=p.patient_name); setPatients(pm); localStorage.setItem('itero_pts',JSON.stringify(pm)); }
+      // 全件取得（ページネーション）
+      let recs=[], recOff=0;
+      while(true){
+        const batch=await sbFetch('records?order=id.desc&limit=1000&offset='+recOff);
+        if(!batch||!batch.length) break;
+        recs=recs.concat(batch);
+        if(batch.length<1000) break;
+        recOff+=1000;
+      }
+      const recsResult=recs;
+      console.log('Records fetched:', recsResult.length);
+      if(recsResult.length>0){ const m=recsResult.map(mapRec).sort((a,b)=>{ if(!a.date&&!b.date)return 0; if(!a.date)return 1; if(!b.date)return -1; return b.date.localeCompare(a.date); }); setDb(m); localStorage.setItem('itero_db',JSON.stringify(recsResult)); }
+      else { console.warn('Supabase returned 0 records - keeping local data'); }
+    }catch(e){}
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{loadData();},[]);
+  useEffect(()=>{
+    if(!loading && tab==='inp'){
+      const mikCount=db.filter(r=>r.chk_mikiroku&&!r.hidden).length;
+      if(mikCount>0) setShowMikAlert(true);
+    }
+  },[loading]);
+
+  const updRec=(id,ch)=>setDb(prev=>{ const n=prev.map(r=>r.id===id?{...r,...ch}:r); saveLocal(n); return n; });
+  const syncAll=async()=>{ setSyncing(true); await loadData(); setSyncing(false); };
+
+  const TABS=[{id:'inp',label:'新規入力'},{id:'mik',label:'⚠️ 未記入',cls:'ta'},{id:'iteroweek',label:'📅 今週iTero'},{id:'today',label:'📅 今週技工'},{id:'rec',label:'記録管理'},{id:'done',label:'✅ 完了'},{id:'dc',label:'確認'},{id:'dash',label:'集計'}];
+
+  return <>
+    <style>{css}</style>
+    <div id="root">
+      {loading&&<div style={{position:'fixed',inset:0,background:'rgba(245,244,240,.92)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999,fontSize:14,color:'var(--t2)'}}>読み込み中...</div>}
+      <div className="topbar"><h1>🦷 iTero管理</h1><button onClick={()=>setShowReport(true)} style={{marginLeft:'auto',fontSize:12,padding:'5px 10px',borderRadius:'var(--rs)',border:'1px solid var(--b2)',background:'transparent',color:'var(--t2)',cursor:'pointer'}}>🐛 報告</button><button className="sync-btn" style={{marginLeft:6}} onClick={syncAll}>{syncing?'同期中...':'同期'}</button></div>
+      {notice&&!noticeEditMode&&<div style={{background:'#fffbeb',borderBottom:'1px solid #fde68a',padding:'6px 14px',display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+        <span style={{fontSize:11,fontWeight:700,color:'var(--amt)'}}>📢</span>
+        <span style={{fontSize:12,color:'var(--amt)',flex:1}}>{notice}</span>
+        <button onClick={()=>{setNoticeInput(notice);setShowNoticeEdit(v=>!v);}} style={{fontSize:10,padding:'2px 8px',border:'1px solid #fde68a',borderRadius:10,background:'transparent',color:'var(--amt)',cursor:'pointer'}}>編集</button>
+      </div>}
+      {!notice&&<div style={{background:'var(--s2)',borderBottom:'1px solid var(--border)',padding:'4px 14px',flexShrink:0}}>
+        <button onClick={()=>{setNoticeInput('');setShowNoticeEdit(v=>!v);}} style={{fontSize:11,padding:'2px 8px',border:'1px solid var(--b2)',borderRadius:10,background:'transparent',color:'var(--t3)',cursor:'pointer'}}>📢 連絡事項を追加</button>
+      </div>}
+      {showNoticeEdit&&<div style={{background:'var(--surface)',borderBottom:'1px solid var(--border)',padding:'8px 14px',flexShrink:0}}>
+        {!noticeEditMode
+          ?<div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <input type="password" value={noticePw} onChange={e=>setNoticePw(e.target.value)} onKeyDown={e=>e.key==='Enter'&&noticePw===NOTICE_PW&&(setNoticeEditMode(true))} placeholder="管理者PW" style={{fontSize:13,padding:'5px 8px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',outline:'none',width:130}}/>
+            <button className="btn btn-p" style={{fontSize:12,padding:'5px 12px'}} onClick={()=>{if(noticePw===NOTICE_PW)setNoticeEditMode(true);else alert('パスワードが違います');}}>確認</button>
+            <button className="btn" style={{fontSize:12,padding:'5px 10px'}} onClick={()=>{setShowNoticeEdit(false);setNoticePw('');}}>キャンセル</button>
+          </div>
+          :<div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <input value={noticeInput} onChange={e=>setNoticeInput(e.target.value)} placeholder="連絡事項を入力..." style={{flex:1,fontSize:13,padding:'5px 8px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',outline:'none',background:'var(--s2)'}}/>
+            <button className="btn btn-p" style={{fontSize:12,padding:'5px 12px'}} onClick={saveNotice}>保存</button>
+            <button className="btn btn-d" style={{fontSize:12,padding:'5px 10px'}} onClick={()=>{setNoticeInput('');saveNotice();}}>削除</button>
+          </div>
+        }
+      </div>}
+      <div className="main-tabs">{TABS.map(t=><button key={t.id} className={(t.cls||'')+(tab===t.id?' on':'')} onClick={()=>switchTab(t.id)}>{t.label}</button>)}</div>
+      {showReport&&<ReportModal onClose={()=>setShowReport(false)}/>}
+      {showMikAlert&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+        <div style={{background:'var(--surface)',borderRadius:'var(--r)',padding:24,maxWidth:360,width:'100%',textAlign:'center',boxShadow:'0 4px 24px rgba(0,0,0,0.2)'}}>
+          <div style={{fontSize:32,marginBottom:12}}>⚠️</div>
+          <div style={{fontSize:16,fontWeight:700,color:'var(--rt)',marginBottom:4}}>未記入が{db.filter(r=>r.chk_mikiroku&&!r.hidden).length}件あります</div>
+          <div style={{fontSize:11,color:'var(--t2)',marginBottom:10}}>タップすると詳細入力に進みます</div>
+          <div style={{textAlign:'left',maxHeight:200,overflowY:'auto',marginBottom:16,background:'var(--s2)',borderRadius:'var(--rs)',padding:'8px 12px'}}>
+            {db.filter(r=>r.chk_mikiroku&&!r.hidden).map(r=>
+              <div key={r.id} onClick={()=>pickMikPatient(r)} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 4px',borderBottom:'1px solid var(--border)',fontSize:13,cursor:'pointer',borderRadius:'var(--rs)'}}>
+                <span style={{fontWeight:600}}>{r.patient_name}</span>
+                <StaffBadge staff={r.staff}/>
+              </div>
+            )}
+          </div>
+          <div style={{display:'flex',gap:10}}>
+            <button className="btn btn-p" style={{flex:1,fontSize:13}} onClick={()=>{setShowMikAlert(false);setTab('mik');}}>未記入を確認</button>
+            <button className="btn" style={{flex:1,fontSize:13}} onClick={()=>setShowMikAlert(false)}>このまま入力</button>
+          </div>
+        </div>
+      </div>}
+      <div className="content">
+        {tab==='mik'  && <MikTab db={db} setDb={setDb} patients={patients} setPatients={setPatients} saveLocal={saveLocal} setTab={setTab} switchTab={switchTab} setInputInit={setInputInit} setFromMik={setFromMik}/>}
+        {tab==='iteroweek'&&<IteroWeekTab db={db} updRec={updRec} setDb={setDb} saveLocal={saveLocal}/>}
+        {tab==='today'&& <TodayTab db={db} updRec={updRec}/>}
+        {tab==='inp'  && <InpTab db={db} setDb={setDb} patients={patients} setPatients={setPatients} saveLocal={saveLocal} initData={inputInit} fromMik={fromMik} setFromMik={setFromMik}/>}
+        {tab==='rec'  && <RecTab db={db} updRec={updRec} setDb={setDb} saveLocal={saveLocal}/>}
+        {tab==='done' && <DoneTab db={db} setDb={setDb} saveLocal={saveLocal}/>}
+        {tab==='dc'   && <DCTab db={db} updRec={updRec} setDb={setDb} saveLocal={saveLocal}/>}
+        {tab==='dash' && <DashTab db={db}/>}
+      </div>
+    </div>
+  </>;
+}
+
+// ---- MikTab ----
+function MikTab({db,setDb,patients,setPatients,saveLocal,setTab,switchTab,setInputInit,setFromMik}){
+  const [pid,setPid]=useState('');
+  const [name,setName]=useState('');
+  const [staff,setStaff]=useState('');
+  const [atag,setAtag]=useState('');
+  const [scanDate,setScanDate]=useState(today());
+  const [msg,setMsg]=useState(null);
+
+  const lookup=async(id)=>{
+    if(!id){setAtag('');return;}
+    if(patients[id]){setName(patients[id]);setAtag('✓');return;}
+    if(id.length>=5){ setAtag('検索中...'); const r=await sbFetch('patients?patient_id=eq.'+id+'&limit=1'); if(r&&r.length){setPatients(p=>({...p,[id]:r[0].patient_name}));setName(r[0].patient_name);setAtag('✓');}else setAtag(''); }
+  };
+
+  const save=async()=>{
+    if(!pid||!name){setMsg({err:'IDと名前は必須です'});return;}
+
+    setMsg({info:'保存中...'});
+    const body={date:scanDate,patient_id:pid,patient_name:name,staff,cats:'[]',techs:'[]',old_flag:false,note:'未記入',setdate:null,chk_seimitsu:false,chk_saishuu:false,chk_isogu:false,chk_mikiroku:true,chk_suzuki:false,chk_mokei:false,chk_tochaku:false,chk_kensashin:false,chk_orthocom:false,chk_backup:false,chk_datachecked:false};
+    const r=await sbFetch('records','POST',body);
+    if(!r||!r.length){ setMsg({err:'保存に失敗しました。通信状況を確認して、もう一度お試しください。'}); return; }
+    const nr=mapRec(r[0]);
+    if(!patients[pid]){await sbFetch('patients','POST',{patient_id:pid,patient_name:name});setPatients(p=>({...p,[pid]:name}));}
+    const n=[nr,...db].sort(function(a,b){ if(!a.date&&!b.date)return 0; if(!a.date)return 1; if(!b.date)return -1; return b.date.localeCompare(a.date); }); setDb(n);saveLocal(n);
+    setMsg({ok:'登録しました！'});setPid('');setName('');setStaff('');setAtag('');setScanDate(today());
+    setTimeout(()=>setMsg(null),3000);
+  };
+
+  const goDetail=(r)=>{
+    setInputInit({pid:r.patient_id,name:r.patient_name,date:r.date,staff:r.staff||'',wasMikiroku:true,mikId:r.id});
+    setFromMik(true);
+    setTab('inp');
+  };
+
+  const list=db.filter(r=>r.chk_mikiroku&&!r.hidden);
+  return <div>
+    <div className="card" style={{borderColor:'#fca5a5',background:'#fff5f5'}}>
+      <div className="ct" style={{color:'var(--rt)'}}>⚠️ 記録未記入 — 簡易登録</div>
+      <p style={{fontSize:12,color:'var(--rt)',marginBottom:12}}>患者IDと名前だけ入力。担当者が後で詳細を追加します。</p>
+      <div style={{display:'flex',gap:8,alignItems:'flex-end',marginBottom:10}}>
+        <div className="f" style={{width:130,marginBottom:0}}><label>患者ID</label><input value={pid} onChange={e=>{setPid(e.target.value);lookup(e.target.value);}} placeholder="21245"/></div>
+        <div className="f" style={{flex:1,marginBottom:0}}><label>患者名 <span className="atag">{atag}</span></label><input value={name} onChange={e=>setName(e.target.value)} placeholder="IDで自動入力"/></div>
+      </div>
+      <div className="row2" style={{marginBottom:10}}>
+        <div className="f" style={{marginBottom:0}}>
+          <label>データ取得日</label>
+          <input type="date" value={scanDate} onChange={e=>setScanDate(e.target.value)}/>
+        </div>
+        <div className="f" style={{marginBottom:0}}>
+          <label>担当</label>
+          <select value={staff} onChange={e=>setStaff(e.target.value)}>
+            <option value="">選択</option>{STAFF.map(s=><option key={s}>{s}</option>)}
+          </select>
+        </div>
+      </div>
+      {msg&&<div className={"al "+(msg.ok?'al-ok':msg.err?'al-err':'')} style={msg.info?{background:'var(--s2)',color:'var(--t2)'}:{}}>{msg.ok||msg.err||msg.info}</div>}
+      <button className="btn" style={{width:'100%',background:'var(--red)',color:'#fff',borderColor:'var(--red)'}} onClick={save}>未記入として登録</button>
+    </div>
+    <div style={{fontSize:13,fontWeight:600,color:'var(--rt)',marginBottom:8}}>未記入一覧</div>
+    {list.length===0
+      ? <p className="empty" style={{color:'var(--gt)'}}>✓ 未記入なし</p>
+      : list.map(r=><div key={r.id} className="rc" style={{borderLeft:'4px solid var(--red)',background:'#fff5f5',borderColor:'#fca5a5'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+            <div>
+                <div className="rn" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span>{r.patient_name}</span>
+                  <Bdg cls="b-red">未記入</Bdg>
+                </div>
+                <div className="rm" style={{marginTop:4,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                  <span>{r.patient_id}　📅 {r.date}</span>
+                  <StaffBadge staff={r.staff}/>
+                </div>
+              </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn" style={{fontSize:12,padding:'5px 10px',background:'var(--ambg)',color:'var(--amt)',borderColor:'#fde68a'}} onClick={()=>goDetail(r)}>詳細入力</button>
+              <DelBtn id={r.id} db={db} setDb={setDb} saveLocal={saveLocal}/>
+            </div>
+          </div>
+        </div>)
+    }
+  </div>;
+}
+
+// ---- InpTab ----
+function InpTab({db,setDb,patients,setPatients,saveLocal,initData,fromMik,setFromMik}){
+  const [pid,setPid]=useState('');
+  const [name,setName]=useState('');
+  const [date,setDate]=useState(today());
+  const [staff,setStaff]=useState('');
+  const [cats,setCats]=useState([]);
+  const [techs,setTechs]=useState([]);
+  const [sei,setSei]=useState(false);
+  const [sai,setSai]=useState(false);
+  const [old,setOld]=useState(false);
+  const [iso,setIso]=useState(false);
+  const [note,setNote]=useState('');
+  const [atag,setAtag]=useState('');
+  const [msg,setMsg]=useState(null);
+
+  useEffect(()=>{
+    if(initData){ setPid(initData.pid||'');setName(initData.name||'');setDate(initData.date||today());setStaff(initData.staff||'');setAtag(initData.name?'✓':''); }
+  },[initData]);
+
+  const lookup=async(id)=>{
+    if(!id){setAtag('');return;}
+    if(patients[id]){setName(patients[id]);setAtag('✓');return;}
+    if(id.length>=5){ setAtag('検索中...'); const r=await sbFetch('patients?patient_id=eq.'+id+'&limit=1'); if(r&&r.length){setPatients(p=>({...p,[id]:r[0].patient_name}));setName(r[0].patient_name);setAtag('✓');}else setAtag(''); }
+  };
+
+  const tog=(arr,set,v)=>set(a=>a.includes(v)?a.filter(x=>x!==v):[...a,v]);
+  // 技工物内容チップのトグル（自動で種別「技工物」も追加）
+  const togTech=(v)=>{
+    setTechs(a=>{
+      const next=a.includes(v)?a.filter(x=>x!==v):[...a,v];
+      // 技工物内容が1つでもあれば種別「技工物」を自動追加
+      if(next.length>0) setCats(c=>c.includes('技工物')?c:[...c,'技工物']);
+      else setCats(c=>c.filter(x=>x!=='技工物'));
+      return next;
+    });
+  };
+
+  const save=async()=>{
+    if(!pid||!name){setMsg({err:'IDと名前は必須です'});return;}
+    if(cats.length===0&&!sei&&!sai){setMsg({err:'種別または検査を1つ以上選択してください'});return;}
+    if(cats.includes('技工物')&&techs.length===0){setMsg({err:'技工物を選択した場合は技工物内容を1つ以上選択してください'});return;}
+    setMsg({info:'保存中...'});
+    const wasMik=initData&&initData.wasMikiroku;
+    const body={date,patient_id:pid,patient_name:name,staff,cats:JSON.stringify(cats),techs:JSON.stringify(techs),old_flag:old,note,setdate:null,chk_seimitsu:sei,chk_saishuu:sai,chk_isogu:iso,chk_mikiroku:false,chk_datachecked:false,chk_suzuki:false,chk_mokei:false,chk_tochaku:false,chk_kensashin:false,chk_orthocom:false,chk_backup:false,chk_was_mik:!!wasMik};
+    const r=await sbFetch('records','POST',body);
+    if(!r||!r.length){ setMsg({err:'保存に失敗しました。通信状況を確認して、もう一度お試しください。（未記入データは削除されていません）'}); return; }
+    const nr=mapRec(r[0]);
+    if(!patients[pid]){await sbFetch('patients','POST',{patient_id:pid,patient_name:name});setPatients(p=>({...p,[pid]:name}));}
+    let baseDb=db;
+    const mikId=initData&&initData.mikId;
+    if(mikId){ baseDb=db.filter(x=>x.id!==mikId); sbFetch('records?id=eq.'+mikId,'DELETE').catch(()=>{}); }
+    const n=[nr,...baseDb].sort(function(a,b){ if(!a.date&&!b.date)return 0; if(!a.date)return 1; if(!b.date)return -1; return b.date.localeCompare(a.date); }); setDb(n);saveLocal(n);
+    setMsg({ok:'登録しました！'});
+    setPid('');setName('');setDate(today());setStaff('');setCats([]);setTechs([]);setSei(false);setSai(false);setOld(false);setIso(false);setNote('');setAtag('');
+    if(setFromMik)setFromMik(false);
+    setTimeout(()=>setMsg(null),3000);
+  };
+
+  return <div>
+    <div className="card">
+      <div className="ct">患者情報</div>
+      <div style={{display:'flex',gap:8,alignItems:'flex-end',marginBottom:10}}>
+        <div className="f" style={{width:130,marginBottom:0}}><label>患者ID</label><input value={pid} onChange={e=>{setPid(e.target.value);lookup(e.target.value);}} placeholder="21245"/></div>
+        <div className="f" style={{flex:1,marginBottom:0}}><label>患者名 <span className="atag">{atag}</span></label><input value={name} onChange={e=>setName(e.target.value)} placeholder="IDで自動入力"/></div>
+      </div>
+      <div className="row2">
+        <div className="f" style={{marginBottom:0}}><label>日付</label><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+        <div className="f" style={{marginBottom:0}}><label>担当</label><select value={staff} onChange={e=>setStaff(e.target.value)}><option value="">選択</option>{STAFF.map(s=><option key={s}>{s}</option>)}</select></div>
+      </div>
+    </div>
+    <div className="card">
+      <div className="ct">検査</div>
+      <div className="chkrow">
+        <label className="ci"><input type="checkbox" checked={sei} onChange={e=>setSei(e.target.checked)}/> 精密検査</label>
+        <label className="ci"><input type="checkbox" checked={sai} onChange={e=>setSai(e.target.checked)}/> 最終検査</label>
+      </div>
+    </div>
+    <div className="card">
+      <div className="ct">データの種類</div>
+      <div className="f"><label>種別（複数選択可）</label><div className="chips">{CATS.map(c=><span key={c} className={"chip"+(cats.includes(c)?' on':'')} onClick={()=>tog(cats,setCats,c)}>{c}</span>)}</div></div>
+      <div className="f"><label>技工物内容（複数選択可）</label><div className="chips">{TECHS.map(t=><span key={t} className={"chip"+(techs.includes(t)?' on':'')} onClick={()=>togTech(t)}>{t}</span>)}</div></div>
+      <div className="chkrow" style={{marginBottom:10}}>
+        <label className="ci"><input type="checkbox" checked={old} onChange={e=>setOld(e.target.checked)}/> 旧</label>
+        <label className="ci iso"><input type="checkbox" checked={iso} onChange={e=>setIso(e.target.checked)}/> 🚨 急ぎ</label>
+      </div>
+      <div className="f" style={{marginBottom:0}}><label>備考</label><input value={note} onChange={e=>setNote(e.target.value)} placeholder="特記事項など"/></div>
+    </div>
+    {msg&&<div className={"al "+(msg.ok?'al-ok':msg.err?'al-err':'')} style={msg.info?{background:'var(--s2)',color:'var(--t2)'}:{}}>{msg.ok||msg.err||msg.info}</div>}
+    <div className="btn-row">
+      <button className="btn btn-p" onClick={save}>登録する</button>
+      <button className="btn" onClick={()=>{setPid('');setName('');setDate(today());setStaff('');setCats([]);setTechs([]);setSei(false);setSai(false);setOld(false);setIso(false);setNote('');setAtag('');}}>クリア</button>
+    </div>
+  </div>;
+}
+
+// ---- RecTab ----
+const SUBS=['すべて','技工物(院外)','技工物(院内)','精密検査','最終検査','再iTero','追加アライナー'];
+
+function RecTab({db,updRec,setDb,saveLocal}){
+  const [subs,setSubs]=useState(['技工物(院外)']);
+  const [view,setView]=useState('list');
+  const [q,setQ]=useState('');
+  const [fSt,setFSt]=useState('');
+  const [F,setF]=useState({});
+  const [printSel,setPrintSel]=useState({});
+  const [printedIds,setPrintedIds]=useState(getPrintedIds);
+  const [hidePrinted,setHidePrinted]=useState(false);
+  const togF=k=>setF(f=>({...f,[k]:!f[k]}));
+  const togPrint=id=>setPrintSel(s=>({...s,[id]:!s[id]}));
+  const selCount=Object.values(printSel).filter(Boolean).length;
+  const doPrint=(records)=>{
+    printPlates(records,()=>{
+      markPrinted(records.map(r=>r.id));
+      setPrintedIds(getPrintedIds());
+      setPrintSel({});
+    });
+  };
+
+  const sub=subs.includes('すべて')?'すべて':subs.length===1?subs[0]:'複数';
+  const matchSub=r=>{
+    if(r.chk_mikiroku||isRecordDone(r)||r.hidden)return false;
+    if(sub==='すべて') return true;
+    return subs.some(s=>{
+      if(s==='技工物(院外)') return r.cats.includes('技工物')&&r.techs.some(t=>!INHOUSE.includes(t));
+      if(s==='技工物(院内)') return r.cats.includes('技工物')&&r.techs.some(t=>INHOUSE.includes(t))&&!r.techs.some(t=>!INHOUSE.includes(t));
+      if(s==='精密検査') return r.checks['精密検査'];
+      if(s==='最終検査') return r.checks['最終検査'];
+      if(s==='再iTero') return r.cats.includes('再iTero');
+      if(s==='追加アライナー') return r.cats.includes('追加アライナー');
+      if(s==='その他') return r.cats.includes('その他');
+      return false;
+    });
+  };
+
+  const weekRange=()=>{ const now=new Date(),day=now.getDay(),mon=new Date(now); mon.setDate(now.getDate()-(day===0?6:day-1)); const sun=new Date(mon); sun.setDate(mon.getDate()+6); return{s:mon.toISOString().slice(0,10),e:sun.toISOString().slice(0,10)}; };
+
+  let list=db.filter(r=>{
+    if(!matchSub(r))return false;
+    if(q&&!r.patient_name.toLowerCase().includes(q.toLowerCase())&&!r.patient_id.includes(q))return false;
+    if(fSt&&r.staff!==fSt)return false;
+    if(F.iso&&!r.chk_isogu)return false;
+    if(F.week){const{s,e}=weekRange();if(!r.setdate||r.setdate<s||r.setdate>e)return false;}
+    if(F.nosetdate){if(r.setdate&&r.setdate!=='未定'&&r.setdate!=='')return false;}
+    if(F.noprint){if(printedIds[r.id])return false;}
+    if(F.mokei){const tc=r.tc;if(!r.techs.some(t=>!tc[t+':mokei']))return false;}
+    if(F.souchi){const tc=r.tc;if(!r.techs.filter(t=>INHOUSE.includes(t)).some(t=>!tc[t+':souchi']))return false;}
+    if(F.mizen){const tc=r.tc;if(!r.techs.filter(t=>!INHOUSE.includes(t)).some(t=>{const v=tc[t+':hatchu']||'未発注';return v==='未発注';}))return false;}
+    if(F.dekisidai){const tc=r.tc;if(!r.techs.filter(t=>!INHOUSE.includes(t)).some(t=>tc[t+':hatchu']==='出来次第'))return false;}
+    if(F.it_miz&&(r.tc['itero_status']||'未発注')!=='未発注')return false;
+    if(F.it_chu&&(r.tc['itero_status']||'未発注')!=='発注済み')return false;
+    if(F.it_ok&&(r.tc['itero_status']||'未発注')!=='到着')return false;
+    if(F.ar_miz&&(r.tc['ar_status']||'未作成')!=='未作成')return false;
+    if(F.ar_inc&&(r.tc['ar_status']||'未作成')!=='院長作成中')return false;
+    if(F.ar_ok&&(r.tc['ar_status']||'未作成')!=='到着')return false;
+    if(F.ar_ren&&(r.tc['ar_status']||'未作成')!=='患者連絡済み')return false;
+    if(F.ks_send&&r.checks['検査送信'])return false;
+    if(F.ks_ortho&&r.checks['orthocom'])return false;
+    if(F.ks_bk&&r.checks['backup'])return false;
+    if(F.ks_suz&&r.checks['チェック鈴木'])return false;
+    return true;
+  });
+  const isTechOnly=subs.every(s=>s==='技工物(院外)'||s==='技工物(院内)')||subs.includes('技工物(院外)')||subs.includes('技工物(院内)');
+  if(F.sort){
+    list=[...list].sort((a,b)=>{ if(!a.setdate&&!b.setdate)return 0;if(!a.setdate)return 1;if(!b.setdate)return-1;return a.setdate.localeCompare(b.setdate); });
+  } else if(isTechOnly){
+    list=[...list].sort((a,b)=>{ if(!a.date&&!b.date)return 0;if(!a.date)return 1;if(!b.date)return-1;return b.date.localeCompare(a.date); });
+  }
+
+  const updTC=(id,k,v,extra)=>{ const r=db.find(x=>x.id===id);if(!r)return;const tc={...r.tc,[k]:v,...(extra||{})};updRec(id,{tc});sbFetch('records?id=eq.'+id,'PATCH',{tech_checks:JSON.stringify(tc)}); };
+  const updChk=(id,k,v)=>{ const r=db.find(x=>x.id===id);if(!r)return;updRec(id,{checks:{...r.checks,[k]:v}});const col=CHK_COL[k];if(col){const p={};p[col]=v;sbFetch('records?id=eq.'+id,'PATCH',p);} };
+  const updField=(id,f,v)=>{ updRec(id,{[f]:v});const p={};p[f]=v;sbFetch('records?id=eq.'+id,'PATCH',p); };
+
+  const FB=({k,label,os})=>{ const on=F[k]; return <button className={"fb"+(on?' on':'')} style={on?{}:(os||{})} onClick={()=>togF(k)}>{label}</button>; };
+  const isKanSub=(subs.length===1&&(subs[0]==='技工物(院外)'||subs[0]==='技工物(院内)'||subs[0]==='再iTero'||subs[0]==='追加アライナー'))||(subs.length===2&&subs.includes('技工物(院外)')&&subs.includes('技工物(院内)'));
+
+  // 発注対象カウント（模型済み＆未発注）
+  const orderCount = db.reduce((n,r)=>{
+    if(isRecordDone(r)||r.hidden) return n;
+    const tc=r.tc||{};
+    return n + r.techs.filter(t=>!INHOUSE.includes(t)&&tc[t+':mokei']&&(!tc[t+':hatchu']||tc[t+':hatchu']==='未発注')).length;
+  },0);
+
+  return <div>
+    {orderCount>0&&<button onClick={()=>printOrderList(db,updTC)} style={{display:'flex',alignItems:'center',gap:6,marginBottom:10,fontSize:13,padding:'7px 18px',borderRadius:20,border:'none',background:'#0d9488',color:'#fff',cursor:'pointer',fontWeight:700,boxShadow:'0 2px 8px rgba(13,148,136,0.3)'}}>
+      📋 発注リスト印刷　<span style={{background:'#fff',color:'#0d9488',borderRadius:20,padding:'0 8px',fontWeight:900,fontSize:13}}>{orderCount}件</span>
+    </button>}
+    <div className="stabs">{SUBS.map(s=>{
+        const isOn=subs.includes(s);
+        const isTechBtn=s==='技工物(院外)'||s==='技工物(院内)';
+        return <button key={s} className={"stab"+(isOn?' on':'')} onClick={()=>{
+          if(s==='すべて'){setSubs(['すべて']);setView('list');setF({});return;}
+          if(isTechBtn){
+            // 技工物ボタンは複数選択可能
+            setSubs(prev=>{
+              const filtered=prev.filter(x=>x!=='すべて');
+              if(filtered.includes(s)) return filtered.length>1?filtered.filter(x=>x!==s):filtered;
+              return [...filtered.filter(x=>x!=='すべて'), s];
+            });
+            setView('list');setF({});
+          } else {
+            setSubs([s]);setView('list');setF({});
+          }
+        }}>{s}</button>;
+      })}</div>
+    <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="患者名・IDで検索..." style={{flex:1,minWidth:110,fontSize:13,padding:'8px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:'var(--surface)',color:'var(--text)',outline:'none'}}/>
+      <select value={fSt} onChange={e=>setFSt(e.target.value)} style={{fontSize:13,padding:'8px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:'var(--surface)',color:'var(--text)',WebkitAppearance:'none',outline:'none'}}>
+        <option value="">担当: 全員</option>{STAFF.map(s=><option key={s}>{s}</option>)}
+      </select>
+    </div>
+    {isKanSub&&<div className="view-toggle"><button className={"vbtn"+(view==='list'?' on':'')} onClick={()=>setView('list')}>📋 一覧</button><button className={"vbtn"+(view==='kanban'?' on':'')} onClick={()=>setView('kanban')}>📊 カンバン</button></div>}
+    {subs.length===1&&(subs[0]==='技工物(院外)'||subs[0]==='技工物(院内)')&&view==='list'&&<div className="fbtns">
+      <FB k="sort" label="📅 セット日順"/><FB k="nosetdate" label="📅 セット日未入力" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="week" label="📌 今週"/><FB k="iso" label="🚨 急ぎ" os={{color:'var(--ot)',borderColor:'#fed7aa'}}/>
+      <FB k="mokei" label="📦 模型未" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="souchi" label="🔧 装置未" os={{color:'var(--pt)',borderColor:'#c4b5fd'}}/><FB k="mizen" label="📮 未発注" os={{color:'var(--amt)',borderColor:'#fde68a'}}/>
+        <FB k="dekisidai" label="📞 出来次第" os={{color:'var(--pt)',borderColor:'#c4b5fd'}}/>
+        <FB k="noprint" label="🏷️ 名札未印刷" os={{color:'#d97706',borderColor:'#fde68a'}}/>
+    </div>}
+    {sub==='再iTero'&&view==='list'&&<div className="fbtns"><FB k="it_miz" label="📮 未発注" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="it_chu" label="🔄 発注済み" os={{color:'var(--amt)',borderColor:'#fde68a'}}/><FB k="it_ok" label="✅ 到着" os={{color:'var(--gt)',borderColor:'#bbf7d0'}}/></div>}
+    {sub==='追加アライナー'&&view==='list'&&<div className="fbtns"><FB k="ar_miz" label="📋 未作成" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="ar_inc" label="👨‍⚕️ 院長作成中" os={{color:'var(--amt)',borderColor:'#fde68a'}}/><FB k="ar_ok" label="✅ 到着" os={{color:'var(--gt)',borderColor:'#bbf7d0'}}/><FB k="ar_ren" label="📞 患者連絡済み" os={{color:'var(--pt)',borderColor:'#c4b5fd'}}/></div>}
+    {(sub==='精密検査'||sub==='最終検査')&&<div className="fbtns"><FB k="ks_send" label="📤 送信未" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="ks_ortho" label="💻 orthocom未" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="ks_bk" label="💾 backup未" os={{color:'var(--rt)',borderColor:'#fca5a5'}}/><FB k="ks_suz" label="✅ 確認未" os={{color:'var(--amt)',borderColor:'#fde68a'}}/></div>}
+    {view==='kanban'&&subs.includes('技工物(院外)')&&subs.includes('技工物(院内)')&&<div>
+      <div style={{fontWeight:700,fontSize:13,color:'#ea580c',marginBottom:6,paddingLeft:2}}>📦 院外技工物</div>
+      <GaikouKanban list={list.filter(r=>r.techs.some(t=>!INHOUSE.includes(t)))} updTC={updTC}/>
+      <div style={{fontWeight:700,fontSize:13,color:'#16a34a',margin:'14px 0 6px',paddingLeft:2}}>🏥 院内技工物</div>
+      <InhouKanban list={list.filter(r=>r.techs.some(t=>INHOUSE.includes(t)))} updTC={updTC}/>
+    </div>}
+    {view==='kanban'&&subs.length===1&&subs[0]==='技工物(院外)'&&<GaikouKanban list={list} updTC={updTC}/>}
+    {view==='kanban'&&subs.length===1&&subs[0]==='技工物(院内)'&&<InhouKanban list={list} updTC={updTC}/>}
+    {view==='kanban'&&sub==='追加アライナー'&&<ArKanban list={list} updTC={updTC}/>}
+    {view==='kanban'&&sub==='再iTero'&&<IteroKanban list={list} updTC={updTC}/>}
+    {isTechOnly&&view==='list'&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+      <button onClick={()=>setHidePrinted(h=>!h)} style={{fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid '+(hidePrinted?'#1e40af':'var(--border)'),background:hidePrinted?'#eff6ff':'var(--surface)',color:hidePrinted?'#1e40af':'var(--t2)',cursor:'pointer',fontWeight:hidePrinted?700:400}}>
+        {hidePrinted?'✅ 印刷済みを非表示中':'🔲 印刷済みも表示する'}
+      </button>
+      {selCount>0&&<><span style={{fontSize:13,color:'#1e40af',fontWeight:700}}>🏷️ {selCount}件選択中</span>
+      <button onClick={()=>doPrint(list.filter(r=>printSel[r.id]))} style={{fontSize:13,padding:'5px 16px',borderRadius:20,border:'none',background:'#1e40af',color:'#fff',cursor:'pointer',fontWeight:700}}>まとめて印刷</button>
+      <button onClick={()=>{const all={};list.forEach(r=>{all[r.id]=true;});setPrintSel(all);}} style={{fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid #93c5fd',background:'#fff',color:'#1e40af',cursor:'pointer'}}>全選択</button>
+      <button onClick={()=>setPrintSel({})} style={{fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid #cbd5e1',background:'#fff',color:'#64748b',cursor:'pointer'}}>解除</button></>}
+    </div>}
+    {view==='list'&&(()=>{const disp=hidePrinted&&isTechOnly?list.filter(r=>!printedIds[r.id]):list;return disp.length===0?<p className="empty">該当なし</p>:
+      sub==='すべて'
+        ? <AllView list={disp} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField}/>
+        : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{disp.map(r=><RCard key={r.id} r={r} sub={sub} db={db} setDb={setDb} saveLocal={saveLocal} updTC={updTC} updChk={updChk} updField={updField} printSel={printSel} togPrint={isTechOnly&&!hidePrinted?togPrint:null} printedDate={printedIds[r.id]} onClearPrinted={()=>{clearPrinted(r.id);setPrintedIds(getPrintedIds());}}/>)}</div>
+    ;})()}
+  </div>;
+}
+
+
+
+// ---- EditModal ----
+function EditModal({r, db, setDb, saveLocal, onClose}){
+  const [staff, setStaff] = useState(r.staff||'');
+  const [note, setNote]   = useState(r.note||'');
+  const [date, setDate]   = useState(r.date||today());
+  const [setdate, setSetdate] = useState(r.setdate||'');
+  const [cats, setCats]   = useState(r.cats||[]);
+  const [techs, setTechs] = useState(r.techs||[]);
+  const [sei, setSei]     = useState(r.checks['精密検査']||false);
+  const [sai, setSai]     = useState(r.checks['最終検査']||false);
+  const [iso, setIso]     = useState(r.chk_isogu||false);
+  const [msg, setMsg]     = useState(null);
+
+  const tog=(arr,set,v)=>set(a=>a.includes(v)?a.filter(x=>x!==v):[...a,v]);
+
+  const save = async () => {
+    setMsg({info:'保存中...'});
+    const patch = {
+      staff, note, date, setdate:setdate||null,
+      cats:JSON.stringify(cats), techs:JSON.stringify(techs),
+      chk_seimitsu:sei, chk_saishuu:sai, chk_isogu:iso,
+    };
+    const next = db.map(x => x.id===r.id ? {...x,...patch,cats,techs,chk_isogu:iso,checks:{...x.checks,'精密検査':sei,'最終検査':sai}} : x);
+    setDb(next); saveLocal(next);
+    await sbFetch('records?id=eq.'+r.id,'PATCH',patch);
+    setMsg({ok:'保存しました！'});
+    setTimeout(()=>onClose(),1000);
+  };
+
+  return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+    <div style={{background:'var(--surface)',width:'100%',maxWidth:600,maxHeight:'85vh',overflowY:'auto',borderRadius:'16px 16px 0 0',padding:20}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:700}}>✏️ 修正：{r.patient_name}</div>
+        <button onClick={onClose} style={{fontSize:18,background:'none',border:'none',cursor:'pointer',color:'var(--t2)'}}>✕</button>
+      </div>
+      <div className="row2" style={{marginBottom:10}}>
+        <div className="f" style={{marginBottom:0}}><label>日付</label><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+        <div className="f" style={{marginBottom:0}}><label>担当</label>
+          <select value={staff} onChange={e=>setStaff(e.target.value)}>
+            <option value="">選択</option>{STAFF.map(s=><option key={s}>{s}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="f" style={{marginBottom:10}}><label>種別</label>
+        <div className="chips">{CATS.map(c=><span key={c} className={"chip"+(cats.includes(c)?' on':'')} onClick={()=>tog(cats,setCats,c)}>{c}</span>)}</div>
+      </div>
+      <div className="f" style={{marginBottom:10}}><label>技工物内容</label>
+        <div className="chips">{TECHS.map(t=><span key={t} className={"chip"+(techs.includes(t)?' on':'')} onClick={()=>tog(techs,setTechs,t)}>{t}</span>)}</div>
+      </div>
+      <div className="chkrow" style={{marginBottom:10}}>
+        <label className="ci"><input type="checkbox" checked={sei} onChange={e=>setSei(e.target.checked)}/> 精密検査</label>
+        <label className="ci"><input type="checkbox" checked={sai} onChange={e=>setSai(e.target.checked)}/> 最終検査</label>
+        <label className="ci iso"><input type="checkbox" checked={iso} onChange={e=>setIso(e.target.checked)}/> 🚨 急ぎ</label>
+      </div>
+      <div className="row2" style={{marginBottom:10}}>
+        <div className="f" style={{marginBottom:0}}><label>セット日</label><input type="date" value={setdate} onChange={e=>setSetdate(e.target.value)}/></div>
+        <div className="f" style={{marginBottom:0}}><label>備考</label><input value={note} onChange={e=>setNote(e.target.value)} placeholder="特記事項"/></div>
+      </div>
+      {msg&&<div className={"al "+(msg.ok?'al-ok':'')} style={msg.info?{background:'var(--s2)',color:'var(--t2)'}:{}}>{msg.ok||msg.info}</div>}
+      <div className="btn-row">
+        <button className="btn btn-p" style={{flex:1}} onClick={save}>保存する</button>
+        <button className="btn" onClick={onClose}>キャンセル</button>
+      </div>
+    </div>
+  </div>;
+}
+
+// ---- AllView（すべてタブ用・種別グループ・グリッド表示）----
+const ALL_SECTIONS = [
+  { key:'技工物(院外)', label:'技工物（院外）', color:'#ea580c', match: r => r.cats.includes('技工物') && r.techs.some(t=>!INHOUSE.includes(t)) },
+  { key:'技工物(院内)', label:'技工物（院内）', color:'#16a34a', match: r => r.cats.includes('技工物') && r.techs.some(t=>INHOUSE.includes(t)) && !r.techs.some(t=>!INHOUSE.includes(t)) },
+  { key:'精密検査',     label:'精密検査',       color:'#3b82f6', match: r => r.checks['精密検査'] },
+  { key:'最終検査',     label:'最終検査',       color:'#0d9488', match: r => r.checks['最終検査'] },
+  { key:'再iTero',      label:'再iTero',        color:'#d97706', match: r => r.cats.includes('再iTero') },
+  { key:'追加アライナー',label:'追加アライナー', color:'#7c3aed', match: r => r.cats.includes('追加アライナー') },
+];
+
+function AllCard({r, color, db, setDb, saveLocal}){
+  const tc = r.tc||{};
+  const arStatus = tc['ar_status']||'未作成';
+  const itStatus = tc['itero_status']||'未発注';
+  return <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderLeft:'3px solid '+color,borderRadius:'var(--rs)',padding:'8px 10px'}}>
+    <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginBottom:3}}>
+      <span style={{fontSize:13,fontWeight:700}}>{r.patient_name}</span>
+      <StaffBadge staff={r.staff}/>
+      {r.chk_isogu&&<Bdg cls="b-org">🚨</Bdg>}
+    </div>
+    <div style={{fontSize:11,color:'var(--t2)'}}>{r.patient_id}　{r.date}</div>
+    {r.techs.length>0&&<div style={{fontSize:11,color:'var(--t2)',marginTop:2}}>{r.techs.join('・')}</div>}
+    {r.setdate&&<div style={{fontSize:11,color:color,fontWeight:600,marginTop:2}}>📅 {r.setdate}</div>}
+    {r.cats.includes('再iTero')&&<div style={{fontSize:10,marginTop:3}}><span style={{padding:'1px 6px',borderRadius:8,background:itStatus==='到着'?'var(--gbg)':itStatus==='発注済み'?'var(--ambg)':'var(--rbg)',color:itStatus==='到着'?'var(--gt)':itStatus==='発注済み'?'var(--amt)':'var(--rt)',fontWeight:600}}>{itStatus}</span></div>}
+    {r.cats.includes('追加アライナー')&&<div style={{fontSize:10,marginTop:3}}><span style={{padding:'1px 6px',borderRadius:8,background:arStatus==='患者連絡済み'?'var(--gbg)':arStatus==='到着'?'var(--gbg)':arStatus==='院長作成中'?'var(--ambg)':'var(--rbg)',color:arStatus==='患者連絡済み'?'var(--gt)':arStatus==='到着'?'var(--gt)':arStatus==='院長作成中'?'var(--amt)':'var(--rt)',fontWeight:600}}>{arStatus}</span></div>}
+    <div style={{marginTop:6}}><EditBtn r={r} db={db} setDb={setDb} saveLocal={saveLocal}/></div>
+  </div>;
+}
+
+function AllView({list, db, setDb, saveLocal}){
+  return <div>
+    {ALL_SECTIONS.map(sec => {
+      const items = list.filter(sec.match);
+      if(!items.length) return null;
+      return <div key={sec.key} style={{marginBottom:16}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,padding:'5px 10px',background:sec.color+'10',borderRadius:'var(--rs)',borderLeft:'4px solid '+sec.color}}>
+          <span style={{fontSize:12,fontWeight:700,color:sec.color}}>{sec.label}</span>
+          <span style={{fontSize:11,color:sec.color,background:sec.color+'20',padding:'1px 8px',borderRadius:10,fontWeight:600}}>{items.length}件</span>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:8}}>
+          {items.map(r=><AllCard key={r.id} r={r} color={sec.color} db={db} setDb={setDb} saveLocal={saveLocal}/>)}
+        </div>
+      </div>;
+    })}
+  </div>;
+}
+
+// ---- 発注リスト印刷 ----
+const ASO_TECHS  = ['上顎BLR','下顎BLR'];
+const KUBO_TECHS = ['上顎Begg','下顎Begg','L/A','フック付きL/A','スプリント'];
+
+function printOrderList(db, updTC) {
+  const rows = [];
+  const toUpdate = []; // 印刷後に「作製中」にする {id, key}
+  db.forEach(r => {
+    if(isRecordDone(r)||r.hidden) return;
+    const tc = r.tc||{};
+    r.techs.forEach(t => {
+      if(INHOUSE.includes(t)) return;
+      if(!tc[t+':mokei']) return;
+      if(tc[t+':hatchu'] && tc[t+':hatchu']!=='未発注') return;
+      const vendor = ASO_TECHS.includes(t)?'ASO':KUBO_TECHS.includes(t)?'久保':'その他';
+      const mokeiDate = tc[t+':mokei_date'] || r.date || '';
+      const sd = r.setdate&&r.setdate!=='未定' ? r.setdate.slice(5).replace('-','/') : '未定';
+      rows.push({vendor, tech:t, name:r.patient_name, id:r.patient_id, setdate:sd, mokeiDate:mokeiDate.slice(5).replace('-','/')});
+      toUpdate.push({id:r.id, key:t+':hatchu'});
+    });
+  });
+  if(!rows.length){ alert('発注対象（模型作製済み＆未発注）の技工物がありません'); return; }
+
+  const group = {ASO:[], 久保:[], その他:[]};
+  rows.forEach(r=>group[r.vendor].push(r));
+
+  const css = `
+    @page{size:A4 portrait;margin:12mm;}
+    body{font-family:'Hiragino Sans','Yu Gothic',sans-serif;color:#1e293b;margin:0;padding:0;}
+    .page{page-break-after:always;}
+    .page:last-child{page-break-after:auto;}
+    h2{font-size:13pt;font-weight:900;padding-bottom:7px;margin:0 0 14px;display:flex;justify-content:space-between;align-items:center;}
+    .aso h2{color:#1e40af;border-bottom:3px solid #1e40af;}
+    .kubo h2{color:#0d9488;border-bottom:3px solid #0d9488;}
+    .other h2{color:#64748b;border-bottom:3px solid #64748b;}
+    .cnt{border-radius:20px;padding:1px 12px;font-size:10pt;font-weight:900;border:2px solid currentColor;margin-left:8px;}
+    .meta{font-size:9pt;color:#64748b;font-weight:400;margin-left:auto;}
+    table{border-collapse:collapse;width:100%;font-size:11pt;table-layout:fixed;}
+    th{color:#fff;padding:6px 4px;border:1px solid rgba(255,255,255,0.3);text-align:center;white-space:nowrap;}
+    .aso th{background:#1e40af;} .kubo th{background:#0d9488;} .other th{background:#64748b;}
+    td{border:1px solid #cbd5e1;padding:8px 10px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    tr:nth-child(even) td{background:#f8faff;}
+    .tate{writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;text-align:center;letter-spacing:2px;font-size:9pt;display:block;margin:0 auto;}
+    .name{font-weight:700;}
+    .chk{text-align:center;font-size:14pt;}`;
+
+  const makeTable = (cls, title, items) => {
+    if(!items.length) return '';
+    const trs = items.map((r,i)=>`<tr>
+      <td>${r.mokeiDate}</td>
+      <td>${r.id}</td>
+      <td class="name">${r.name}</td>
+      <td>${r.tech}</td>
+      <td style="text-align:center;">${r.setdate}</td>
+      <td class="chk">□</td>
+      <td></td>
+    </tr>`).join('');
+    return `<div class="page ${cls}">
+      <h2>📦 ${title} 発注リスト <span class="cnt">${items.length}件</span><span class="meta">印刷日：${new Date().toLocaleDateString('ja-JP')}</span></h2>
+      <table>
+        <colgroup>
+          <col style="width:52px"><col style="width:88px"><col><col><col style="width:68px"><col style="width:46px"><col style="width:88px">
+        </colgroup>
+        <tr>
+          <th><span class="tate">模型日</span></th>
+          <th>患者ID</th><th>患者名</th><th>技工物</th>
+          <th><span class="tate">セット日</span></th>
+          <th><span class="tate">発注✓</span></th>
+          <th><span class="tate">到着日</span></th>
+        </tr>
+        ${trs}
+      </table>
+    </div>`;
+  };
+
+  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>発注リスト</title><style>${css}</style></head><body>
+    ${makeTable('aso','ASO',group['ASO'])}
+    ${makeTable('kubo','久保さん',group['久保'])}
+    ${makeTable('other','その他',group['その他'])}
+  </body></html>`;
+
+  const w = window.open('','_blank','width=800,height=900');
+  w.document.write(html);
+  w.document.close();
+  w.onload = ()=>{
+    w.print();
+    // 印刷後に発注ステータスを「作製中」に自動更新
+    if(updTC) toUpdate.forEach(({id,key})=>updTC(id, key, '作製中'));
+  };
+}
+
+// ---- NamePlate Print ----
+function plateCss() {
+  return `
+  @page { size: A4 portrait; margin: 10mm; }
+  body { margin: 0; padding: 0; font-family: 'Hiragino Sans','Yu Gothic',sans-serif; background: #fff; display:grid; grid-template-columns: repeat(3,1fr); gap: 6mm; }
+  .plate {
+    width: 100%; aspect-ratio: 5/2; box-sizing: border-box;
+    padding: 5mm 6mm; border: 2px solid #1e40af;
+    display: flex; flex-direction: column; justify-content: space-between;
+    page-break-inside: avoid; break-inside: avoid;
+  }
+  .header { font-size: 8pt; color: #1e40af; font-weight: 700; border-bottom: 1px solid #93c5fd; padding-bottom: 1.5mm; margin-bottom: 2mm; }
+  .name { font-size: 20pt; font-weight: 900; color: #1e3a8a; letter-spacing: 1px; }
+  .id { font-size: 9pt; color: #64748b; margin-top: 1mm; }
+  .tech { font-size: 13pt; font-weight: 700; color: #1e40af; margin-top: 2.5mm; background: #eff6ff; padding: 1.5mm 3mm; border-radius: 3mm; border-left: 3px solid #3b82f6; line-height: 1.6; }
+  .footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 3mm; }
+  .date-label { font-size: 8pt; color: #64748b; }
+  .date-val { font-size: 13pt; font-weight: 700; color: #1e40af; }
+  .reg { font-size: 7pt; color: #9ca3af; text-align: right; }`;
+}
+// 技工物をネームプレートのグループに分ける
+// ・上顎BLR + 下顎BLR → 1枚
+// ・上顎クリアリテーナー + 下顎クリアリテーナー → 1枚
+// ・それ以外は1枚ずつ
+function groupTechsForPlate(techs) {
+  const BLR_PAIR  = ['上顎BLR','下顎BLR'];
+  const CLER_PAIR = ['上顎クリアリテーナー','下顎クリアリテーナー'];
+  const used = new Set();
+  const groups = [];
+  // BLRペア
+  if(techs.includes('上顎BLR')||techs.includes('下顎BLR')){
+    const g = BLR_PAIR.filter(t=>techs.includes(t));
+    g.forEach(t=>used.add(t));
+    if(g.length) groups.push(g);
+  }
+  // クリアペア
+  if(techs.includes('上顎クリアリテーナー')||techs.includes('下顎クリアリテーナー')){
+    const g = CLER_PAIR.filter(t=>techs.includes(t));
+    g.forEach(t=>used.add(t));
+    if(g.length) groups.push(g);
+  }
+  // 残りは1枚ずつ
+  techs.forEach(t=>{ if(!used.has(t)) groups.push([t]); });
+  return groups;
+}
+
+function makePlateHtml(r, techGroup) {
+  const techStr = techGroup.join(' / ');
+  const setdate = r.setdate && r.setdate !== '未定' ? r.setdate : '未定';
+  return `<div class="plate">
+  <div>
+    <div class="name">${r.patient_name||'—'}</div>
+    <div class="id">患者ID: ${r.patient_id||'—'}</div>
+    <div class="tech">${techStr}</div>
+  </div>
+  <div class="footer">
+    <div>
+      <div class="date-label">セット日</div>
+      <div class="date-val">${setdate}</div>
+    </div>
+    <div class="reg">登録日: ${r.date||'—'}</div>
+  </div>
+</div>`;
+}
+
+function getPrintedIds() { try { return JSON.parse(localStorage.getItem('printed_ids')||'{}'); } catch { return {}; } }
+function markPrinted(ids) { try { const d={...getPrintedIds()};ids.forEach(id=>{d[id]=today();});localStorage.setItem('printed_ids',JSON.stringify(d)); } catch {} }
+function clearPrinted(id) { try { const d=getPrintedIds();delete d[id];localStorage.setItem('printed_ids',JSON.stringify(d)); } catch {} }
+
+function printPlates(records, onDone) {
+  const plates = [];
+  records.forEach(r => {
+    const techs = r.techs && r.techs.length ? r.techs : ['—'];
+    groupTechsForPlate(techs).forEach(g => plates.push(makePlateHtml(r, g)));
+  });
+  const body = plates.join('\n');
+  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>印刷</title><style>${plateCss()}</style></head><body>${body}</body></html>`;
+  const w = window.open('','_blank','width=500,height=400');
+  w.document.write(html);
+  w.document.close();
+  w.onload = () => { w.print(); if(onDone) onDone(); };
+}
+
+// ---- RCard ----
+function RCard({r,sub,db,setDb,saveLocal,updTC,updChk,updField,printSel,togPrint,printedDate,onClearPrinted}){
+  const kkeys=(sub==='精密検査'||sub==='最終検査')?KENSA_CHK:[];
+  const done=kkeys.filter(k=>r.checks[k]).length;
+  const tc=r.tc||{};
+  const isTech=sub==='技工物(院外)'||sub==='技工物(院内)'||sub==='すべて'||sub==='複数';
+  const isChecked=!!(printSel&&printSel[r.id]);
+  // 装置完成判定：院内→全部souchi済み、院外→全部到着済み
+  const allDone = isTech && r.techs.length>0 && r.techs.every(t=>{
+    if(INHOUSE.includes(t)) return !!tc[t+':souchi'];
+    return tc[t+':hatchu']==='到着済み';
+  });
+  return <div className={"rc"+(r.chk_isogu?' icard':'')+(isChecked?' print-sel':'')+(allDone?' done-card':'')}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+      <div style={{flex:1}}>
+        <div className="rn" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <span>{r.patient_name}</span>
+          <StaffBadge staff={r.staff}/>
+          {r.old_flag&&<Bdg cls="b-warn">旧</Bdg>}
+          {r.chk_isogu&&<Bdg cls="b-org">🚨急ぎ</Bdg>}
+          {printedDate&&<span style={{fontSize:11,fontWeight:700,color:'#16a34a',background:'#dcfce7',padding:'2px 8px',borderRadius:20,border:'1px solid #86efac',display:'flex',alignItems:'center',gap:4}}>
+            ✅ 印刷済 {printedDate}
+            <button onClick={e=>{e.stopPropagation();onClearPrinted();}} style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#16a34a',padding:'0 2px',lineHeight:1}}>×</button>
+          </span>}
+        </div>
+        <div className="rm">{r.patient_id}　{r.date}</div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:4}}>
+          {[...(r.checks['精密検査']?['精密検査']:[]),...(r.checks['最終検査']?['最終検査']:[]),...(r.cats||[])].filter((v,i,a)=>a.indexOf(v)===i).map(c=>{
+            const CCOL={'精密検査':'#3b82f6','最終検査':'#0d9488','技工物':'#ea580c','追加アライナー':'#7c3aed','再iTero':'#d97706'};
+            const col=CCOL[c]||'#9b948e';
+            return <span key={c} style={{fontSize:10,padding:'2px 7px',borderRadius:10,background:col+'18',border:'1px solid '+col+'40',color:col,fontWeight:600}}>{c}</span>;
+          })}
+        </div>
+        <div className="rm">{r.techs.join('・')||'—'}</div>
+        {r.note&&r.note!=='未記入'&&<div className="rm" style={{color:'var(--amt)'}}>📝 {r.note}</div>}
+      </div>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6,marginLeft:8}}>
+        {kkeys.length>0&&(done===kkeys.length?<Bdg cls="b-ok">完了</Bdg>:done>0?<Bdg cls="b-warn">{done}/{kkeys.length}</Bdg>:<Bdg cls="b-gray">未</Bdg>)}
+        <EditBtn r={r} db={db} setDb={setDb} saveLocal={saveLocal}/>
+        <DelBtn id={r.id} db={db} setDb={setDb} saveLocal={saveLocal}/>
+      </div>
+    </div>
+    {kkeys.length>0&&<><Prog done={done} total={kkeys.length}/><div className="rchks">{kkeys.map(k=><CLabel key={k} label={KENSA_LBL[k]} checked={r.checks[k]} onChange={v=>updChk(r.id,k,v)}/>)}</div></>}
+    {isTech&&r.techs.length>0&&<div style={{marginTop:8,borderTop:'1px dashed var(--border)',paddingTop:8}}>
+      <div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>技工物チェック</div>
+      {r.techs.map(t=>{
+        const isIn=INHOUSE.includes(t);
+        const hv=tc[t+':hatchu']||'未発注';
+        return <div key={t} className="tb">
+          <div className="tbn">{t} {isIn?<Bdg cls="b-pur" style={{fontSize:10}}>院内</Bdg>:<Bdg cls="b-gray" style={{fontSize:10}}>院外</Bdg>}</div>
+          <div className="rchks">
+            <CLabel label="模型作製済み" checked={!!tc[t+':mokei']} onChange={v=>updTC(r.id,t+':mokei',v)}/>
+            {isIn
+              ? <CLabel label="装置作製済み" checked={!!tc[t+':souchi']} onChange={v=>updTC(r.id,t+':souchi',v)}/>
+              : <div><div style={{fontSize:10,color:'var(--t3)',marginBottom:4}}>発注ステータス</div>
+                  <div className="hbtns">
+                    {[['未発注','mizen'],['作製中','chuu'],['到着済み','ok']].map(([label,cls])=><button key={label} className={"hbtn "+cls+(hv===label?' on':'')} onClick={()=>updTC(r.id,t+':hatchu',label,label==='到着済み'?{[t+':arrived_at']:today()}:null)}>{label}</button>)}
+                  </div>
+                </div>
+            }
+          </div>
+        </div>;
+      })}
+    </div>}
+    {sub==='再iTero'&&<div className="ibtns">
+      {[['未発注',{bg:'var(--rbg)',c:'var(--rt)',bc:'#fca5a5'}],['発注済み',{bg:'var(--ambg)',c:'var(--amt)',bc:'#fde68a'}],['到着',{bg:'var(--gbg)',c:'var(--gt)',bc:'#bbf7d0'}]].map(([label,s])=>{
+        const iv=tc['itero_status']||'未発注';
+        return <button key={label} className="ibtn" style={iv===label?{background:s.bg,color:s.c,borderColor:s.bc,fontWeight:700}:{}} onClick={()=>updTC(r.id,'itero_status',label)}>{label}</button>;
+      })}
+    </div>}
+    {sub==='追加アライナー'&&<div className="abtns">
+      {[['未作成',{bg:'var(--rbg)',c:'var(--rt)',bc:'#fca5a5'}],['院長作成中',{bg:'var(--ambg)',c:'var(--amt)',bc:'#fde68a'}],['到着',{bg:'var(--gbg)',c:'var(--gt)',bc:'#bbf7d0'}],['患者連絡済み',{bg:'var(--pbg)',c:'var(--pt)',bc:'#c4b5fd'}]].map(([label,s])=>{
+        const av=tc['ar_status']||'未作成';
+        return <button key={label} className="abtn" style={av===label?{background:s.bg,color:s.c,borderColor:s.bc,fontWeight:700}:{}} onClick={()=>updTC(r.id,'ar_status',label)}>{label}</button>;
+      })}
+    </div>}
+    {isTech&&<div className="sdate" style={{flexWrap:'wrap',gap:8}}>
+      <span>セット日:</span>
+      <input type="date" value={r.setdate&&r.setdate!=='未定'?r.setdate:''} disabled={r.setdate==='未定'} onChange={e=>updField(r.id,'setdate',e.target.value)} style={{opacity:r.setdate==='未定'?0.4:1}}/>
+      <label style={{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',padding:'4px 10px',borderRadius:'var(--rs)',background:r.setdate==='未定'?'var(--ambg)':'var(--s2)',border:'1px solid '+(r.setdate==='未定'?'#fde68a':'var(--border)'),color:r.setdate==='未定'?'var(--amt)':'var(--t2)'}}>
+        <input type="checkbox" checked={r.setdate==='未定'} onChange={e=>updField(r.id,'setdate',e.target.checked?'未定':'')} style={{width:14,height:14,accentColor:'var(--amber)',cursor:'pointer'}}/>
+        未定
+      </label>
+      {togPrint&&<label style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',padding:'4px 10px',borderRadius:20,background:isChecked?'#1e40af':'#eff6ff',border:'1px solid '+(isChecked?'#1e40af':'#93c5fd'),color:isChecked?'#fff':'#1e40af',fontWeight:600}}>
+        <input type="checkbox" checked={isChecked} onChange={()=>togPrint(r.id)} style={{accentColor:'#fff',width:14,height:14}}/>
+        🏷️ 選択
+      </label>}
+      {!togPrint&&<button onClick={()=>printPlates([r],()=>{markPrinted([r.id]);if(onClearPrinted)onClearPrinted('refresh');})} style={{marginLeft:'auto',fontSize:12,padding:'4px 12px',borderRadius:20,border:'1px solid #3b82f6',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600}}>🏷️ 印刷</button>}
+    </div>}
+  </div>;
+}
+
+
+// ---- Drag & Drop utils ----
+let dragData = null;
+
+function onDragStart(e, data) {
+  dragData = data;
+  e.currentTarget.classList.add('dragging');
+}
+function onDragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+}
+function onDragOver(e, colEl) {
+  e.preventDefault();
+  colEl && colEl.classList.add('drag-over');
+}
+function onDragLeave(e, colEl) {
+  colEl && colEl.classList.remove('drag-over');
+}
+function onDrop(e, colEl, onDrop) {
+  e.preventDefault();
+  colEl && colEl.classList.remove('drag-over');
+  if(dragData) { onDrop(dragData); dragData = null; }
+}
+
+// ---- Kanban boards ----
+function sortSet(arr){ return [...arr].sort((a,b)=>{ const sa=a.r?a.r.setdate:a.setdate,sb=b.r?b.r.setdate:b.setdate; if(!sa&&!sb)return 0;if(!sa)return 1;if(!sb)return-1;return sa.localeCompare(sb); }); }
+
+function GaikouKanban({list,updTC}){
+  const COLS=[{key:'模型未',cls:'mizen',label:'📦 模型未'},{key:'未発注',cls:'chuu',label:'📮 未発注'},{key:'作製中',cls:'chuu',label:'🔧 作製中'},{key:'到着済み',cls:'ok',label:'✅ 到着済み'}];
+  const NEXT={'未発注':'作製中','作製中':'到着済み','到着済み':'未発注','到着':'到着済み'};
+  const cols={};COLS.forEach(c=>cols[c.key]=[]);
+  list.forEach(r=>r.techs.filter(t=>!INHOUSE.includes(t)).forEach(t=>{
+    if(!r.tc[t+':mokei']){ cols['模型未'].push({r,t,hv:'模型未'}); return; }
+    const hv=r.tc[t+':hatchu']||'未発注';
+    const key=hv==='到着'?'到着済み':COLS.find(c=>c.key===hv)?hv:'未発注';
+    cols[key].push({r,t,hv});
+  }));
+  return <div>
+    <div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>タップでステータスが進みます・セット日順</div>
+    <div className="kanban">{COLS.map(col=>{
+      const isMokei=col.key==='模型未';
+      const isFinal=col.key==='到着済み';
+      const cards=sortSet(cols[col.key]||[]);
+      return <div key={col.key} className="kancol" onDragOver={e=>{const el=e.currentTarget;onDragOver(e,el);}} onDragLeave={e=>{const el=e.currentTarget;onDragLeave(e,el);}} onDrop={e=>{const el=e.currentTarget;onDrop(e,el,({r,t})=>{if(!isFinal&&!isMokei){updTC(r.id,t+':hatchu',col.key,col.key==='到着済み'?{[t+':arrived_at']:today()}:null);}});}}>
+        <div className={"kan-hd "+(isMokei?'mizen':col.cls)}>{col.label}</div>
+        {cards.map(({r,t,hv})=><div key={r.id+t} className="kancard" draggable={!isFinal&&!isMokei} style={isFinal||isMokei?{cursor:'default'}:{}} onDragStart={e=>onDragStart(e,{r,t,hv})} onDragEnd={onDragEnd} onClick={isFinal||isMokei?undefined:()=>updTC(r.id,t+':hatchu',NEXT[hv]||'作製中',hv==='作製中'?{[t+':arrived_at']:today()}:null)}>
+          <div className="kan-name">{r.patient_name}</div>
+          {r.patient_id&&<div style={{fontSize:10,color:'var(--t2)',marginTop:1}}>ID: {r.patient_id}</div>}
+          <div className="kan-tech">{t}</div>
+          {r.setdate&&<div style={{fontSize:10,color:'var(--accent)',marginTop:2}}>📅 {r.setdate}</div>}
+          <div style={{fontSize:10,color:'var(--t3)',marginTop:1}}>{r.date}</div>
+          {r.chk_isogu&&<div style={{fontSize:10,color:'var(--ot)'}}>🚨急ぎ</div>}
+        </div>)}
+        <div className="kan-cnt">{cards.length}件</div>
+      </div>;
+    })}
+    </div>
+  </div>;
+}
+
+function InhouKanban({list,updTC}){
+  const COLS=[{key:'模型未',cls:'mizen',label:'📦 模型未'},{key:'未作製',cls:'chuu',label:'🔧 未作製'},{key:'作製済み',cls:'ok',label:'✅ 作製済み'}];
+  const cols={'模型未':[],'未作製':[],'作製済み':[]};
+  list.forEach(r=>r.techs.filter(t=>INHOUSE.includes(t)).forEach(t=>{
+    if(!r.tc[t+':mokei']){ cols['模型未'].push({r,t}); return; }
+    const key=r.tc[t+':souchi']?'作製済み':'未作製';
+    cols[key].push({r,t});
+  }));
+  const INHOUSE_STAFF=['井ノ上','黒木','荒巻','大津留','浦里','石田','西田','鈴木','受付'];
+  return <div>
+    <div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>タップで切り替え・セット日順</div>
+    <div className="kanban">{COLS.map(col=>{
+      const isMokei=col.key==='模型未';
+      const isFinal=col.key==='作製済み';
+      const cards=sortSet(cols[col.key]||[]);
+      return <div key={col.key} className="kancol" style={{flex:'0 0 calc(33% - 6px)',minWidth:110}} onDragOver={e=>onDragOver(e,e.currentTarget)} onDragLeave={e=>onDragLeave(e,e.currentTarget)} onDrop={e=>onDrop(e,e.currentTarget,({r,t})=>{if(!isFinal&&!isMokei)updTC(r.id,t+':souchi',true);})}>
+        <div className={"kan-hd "+col.cls}>{col.label}</div>
+        {cards.map(({r,t})=>{
+          const maker=r.tc[t+':maker']||'';
+          return <div key={r.id+t} className="kancard" draggable={!isFinal&&!isMokei} style={isFinal||isMokei?{cursor:'default'}:{}} onDragStart={e=>onDragStart(e,{r,t})} onDragEnd={onDragEnd} onClick={isFinal||isMokei?undefined:()=>updTC(r.id,t+':souchi',true)}>
+            <div className="kan-name">{r.patient_name}</div>
+            {r.patient_id&&<div style={{fontSize:10,color:'var(--t2)',marginTop:1}}>ID: {r.patient_id}</div>}
+            <div className="kan-tech">{t}</div>
+            {r.setdate&&<div style={{fontSize:10,color:'var(--accent)',marginTop:2}}>📅 {r.setdate}</div>}
+            <div style={{fontSize:10,color:'var(--t3)',marginTop:1}}>{r.date}</div>
+            {!isMokei&&<div style={{marginTop:4}} onClick={e=>e.stopPropagation()}>
+              <select value={maker} onChange={e=>updTC(r.id,t+':maker',e.target.value)} style={{fontSize:10,padding:'2px 4px',border:'1px solid var(--b2)',borderRadius:4,background:'var(--s2)',color:'var(--text)',width:'100%',WebkitAppearance:'none'}}>
+                <option value="">作成者</option>
+                {INHOUSE_STAFF.map(s=><option key={s}>{s}</option>)}
+              </select>
+            </div>}
+          </div>;
+        })}
+        <div className="kan-cnt">{cards.length}件</div>
+      </div>;
+    })}
+    </div>
+  </div>;
+}
+
+function ArKanban({list,updTC}){
+  const COLS=[{key:'未作成',cls:'mizen',label:'📋 未作成'},{key:'院長作成中',cls:'chuu',label:'👨‍⚕️ 院長作成中'},{key:'到着',cls:'ok',label:'✅ 到着'},{key:'患者連絡済み',cls:'extra',label:'📞 患者連絡済み'}];
+  const NEXT={'未作成':'院長作成中','院長作成中':'到着','到着':'患者連絡済み','患者連絡済み':'未作成'};
+  return <div>
+    <div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>タップで進みます・セット日順</div>
+    <div className="kanban">{COLS.map(col=>{const isFinal=col.key==='患者連絡済み';const cards=sortSet(list.filter(r=>(r.tc['ar_status']||'未作成')===col.key));return <div key={col.key} className="kancol kancol4" onDragOver={e=>onDragOver(e,e.currentTarget)} onDragLeave={e=>onDragLeave(e,e.currentTarget)} onDrop={e=>onDrop(e,e.currentTarget,({r})=>{if(!isFinal)updTC(r.id,'ar_status',col.key);})}><div className={"kan-hd "+col.cls}>{col.label}</div>{cards.map(r=><div key={r.id} className="kancard" draggable={!isFinal} style={isFinal?{cursor:'default',opacity:0.7}:{}} onDragStart={e=>onDragStart(e,{r})} onDragEnd={onDragEnd} onClick={isFinal?undefined:()=>updTC(r.id,'ar_status',NEXT[r.tc['ar_status']||'未作成']||'院長作成中')}><div className="kan-name">{r.patient_name}</div><div className="kan-tech">{r.techs.join('・')||'—'}</div>{r.setdate&&<div style={{fontSize:10,color:'var(--accent)',marginTop:2}}>📅 {r.setdate}</div>}</div>)}<div className="kan-cnt">{cards.length}件</div></div>;})}
+    </div>
+  </div>;
+}
+
+function IteroKanban({list,updTC}){
+  const COLS=[{key:'未発注',cls:'mizen',label:'📮 未発注'},{key:'発注済み',cls:'chuu',label:'🔄 発注済み'},{key:'到着',cls:'ok',label:'✅ 到着'}];
+  const NEXT={'未発注':'発注済み','発注済み':'到着','到着':'未発注'};
+  return <div>
+    <div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>タップで進みます（最終ステータスは固定）</div>
+    <div className="kanban">{COLS.map(col=>{const isFinal=col.key==='到着';const cards=sortSet(list.filter(r=>(r.tc['itero_status']||'未発注')===col.key));return <div key={col.key} className="kancol" onDragOver={e=>onDragOver(e,e.currentTarget)} onDragLeave={e=>onDragLeave(e,e.currentTarget)} onDrop={e=>onDrop(e,e.currentTarget,({r})=>{if(!isFinal)updTC(r.id,'itero_status',col.key);})}><div className={"kan-hd "+col.cls}>{col.label}</div>{cards.map(r=><div key={r.id} className="kancard" draggable={!isFinal} style={isFinal?{cursor:'default',opacity:0.7}:{}} onDragStart={e=>onDragStart(e,{r})} onDragEnd={onDragEnd} onClick={isFinal?undefined:()=>updTC(r.id,'itero_status',NEXT[r.tc['itero_status']||'未発注']||'発注済み')}><div className="kan-name">{r.patient_name}</div><div className="kan-tech">{r.techs.join('・')||'—'}</div>{r.setdate&&<div style={{fontSize:10,color:'var(--accent)',marginTop:2}}>📅 {r.setdate}</div>}</div>)}<div className="kan-cnt">{cards.length}件</div></div>;})}
+    </div>
+  </div>;
+}
+
+// ---- DoneTab ----
+const DONE_SUBS=['すべて','技工物(院外)','技工物(院内)','精密検査','最終検査','再iTero','追加アライナー'];
+function DoneTab({db,setDb,saveLocal}){
+  const [sub,setSub]=useState('すべて');
+  const [q,setQ]=useState('');
+  const matchDone=r=>{
+    if(sub==='すべて')return true;
+    if(sub==='技工物')return r.cats.includes('技工物');
+
+    if(sub==='精密検査')return r.checks['精密検査'];
+    if(sub==='最終検査')return r.checks['最終検査'];
+    if(sub==='再iTero')return r.cats.includes('再iTero');
+    if(sub==='追加アライナー')return r.cats.includes('追加アライナー');
+    return true;
+  };
+  const list=db.filter(r=>!r.chk_mikiroku&&!r.hidden&&isRecordDone(r)&&matchDone(r)&&(!q||r.patient_name.toLowerCase().includes(q.toLowerCase())||r.patient_id.includes(q)));
+  const del=id=>{ const r=db.find(x=>x.id===id);if(!confirm((r?r.patient_name+'のデータを':'このデータを')+'記録管理から削除しますか？\n\n確認タブには残ります。'))return;const n=db.map(x=>x.id===id?{...x,hidden:true}:x);setDb(n);saveLocal(n);sbFetch('records?id=eq.'+id,'PATCH',{hidden:true}).catch(()=>{}); };
+  return <div>
+    <div className="stabs">{DONE_SUBS.map(s=><button key={s} className={"stab"+(sub===s?' on':'')} onClick={()=>setSub(s)}>{s}</button>)}</div>
+    <input value={q} onChange={e=>setQ(e.target.value)} placeholder="患者名・IDで検索..." style={{width:'100%',fontSize:13,padding:'8px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:'var(--surface)',color:'var(--text)',outline:'none',marginBottom:10}}/>
+    <div style={{fontSize:12,color:'var(--t2)',marginBottom:12}}>完了 {list.length}件</div>
+    {list.length===0?<p className="empty">完了済みの記録はありません</p>:
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+    {list.map(r=>{
+      const cats=[];if(r.checks['精密検査'])cats.push('精密検査');if(r.checks['最終検査'])cats.push('最終検査');r.cats.forEach(c=>{if(!cats.includes(c))cats.push(c);});
+      return <div key={r.id} className="rc" style={{borderLeft:'4px solid var(--green)',marginBottom:0}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div className="rn" style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+              <span>{r.patient_name}</span>
+              <StaffBadge staff={r.staff}/>
+              {r.old_flag&&<Bdg cls="b-warn">旧</Bdg>}
+              <Bdg cls="b-ok">完了</Bdg>
+            </div>
+            <div className="rm">{r.patient_id}　{r.date}</div>
+            <div style={{marginTop:4,display:'flex',flexWrap:'wrap',gap:4}}>{cats.map(c=>{const col=CAT_COLORS[c]||'#9b948e';return <span key={c} style={{fontSize:10,padding:'1px 6px',borderRadius:8,border:'1px solid '+col+'40',color:col,fontWeight:600}}>{c}</span>;})}</div>
+            {r.techs.length>0&&<div className="rm">{r.techs.join('・')}</div>}
+            {r.setdate&&<div className="rm">📅 {r.setdate}</div>}
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:4,marginLeft:6,flexShrink:0}}>
+            <EditBtn r={r} db={db} setDb={setDb} saveLocal={saveLocal}/>
+            <button className="btn btn-d" onClick={()=>del(r.id)}>削除</button>
+          </div>
+        </div>
+      </div>;
+    })}
+    </div>}
+  </div>;
+}
+
+function DCTab({db,updRec,setDb,saveLocal}){
+  const [mode,setMode]=useState('all');
+  const [q,setQ]=useState('');
+  const [adminMode,setAdminMode]=useState(false);
+  const [pwInput,setPwInput]=useState('');
+  const [showPw,setShowPw]=useState(false);
+  const ADMIN_PW='daimon1020';
+  const tryAdmin=()=>{
+    if(pwInput===ADMIN_PW){setAdminMode(true);setShowPw(false);setPwInput('');}
+    else{alert('パスワードが違います');}
+  };
+
+  const getRC=r=>{ const c=[]; if(r.checks['精密検査'])c.push('精密検査');if(r.checks['最終検査'])c.push('最終検査');r.cats.forEach(x=>{if(!c.includes(x))c.push(x);});if(!c.length)c.push('その他');return c; };
+  let list=db.filter(r=>!r.chk_mikiroku);
+  if(mode==='unc')list=list.filter(r=>!r.chk_datachecked);
+  if(q)list=list.filter(r=>r.patient_name.toLowerCase().includes(q.toLowerCase())||r.patient_id.includes(q));
+  const grouped={},order=[];
+  list.forEach(r=>{ if(!grouped[r.patient_id]){grouped[r.patient_id]={pid:r.patient_id,name:r.patient_name,recs:[]};order.push(r.patient_id);}grouped[r.patient_id].recs.push(r); });
+  const updChk=(id,k,v)=>{ const r=db.find(x=>x.id===id);if(!r)return;updRec(id,{checks:{...r.checks,[k]:v}});const col=CHK_COL[k];if(col){const p={};p[col]=v;sbFetch('records?id=eq.'+id,'PATCH',p);} };
+  const updDC=(id,v)=>{ updRec(id,{chk_datachecked:v});sbFetch('records?id=eq.'+id,'PATCH',{chk_datachecked:v}); };
+  const CCOL={'精密検査':'#3b82f6','最終検査':'#0d9488','技工物':'#ea580c','追加アライナー':'#7c3aed','再iTero':'#d97706'};
+  return <div>
+    <div className="fbtns" style={{marginBottom:8}}>
+      <button className="fb" style={mode==='all'?{background:'var(--accent)',color:'#fff',borderColor:'var(--accent)'}:{}} onClick={()=>setMode('all')}>すべて</button>
+      <button className="fb" style={mode==='unc'?{background:'var(--accent)',color:'#fff',borderColor:'var(--accent)'}:{}} onClick={()=>setMode('unc')}>未確認のみ</button>
+    </div>
+    <input value={q} onChange={e=>setQ(e.target.value)} placeholder="患者名・IDで検索..." style={{width:'100%',fontSize:13,padding:'8px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:'var(--surface)',color:'var(--text)',outline:'none',marginBottom:8}}/>
+    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+      {!adminMode?<button className="fb" style={{color:'var(--rt)',borderColor:'#fca5a5'}} onClick={()=>setShowPw(v=>!v)}>🔒 管理者モード</button>:<button className="fb" style={{background:'var(--rt)',color:'#fff',borderColor:'var(--rt)'}} onClick={()=>setAdminMode(false)}>🔓 管理者モード中（タップで終了）</button>}
+      {showPw&&!adminMode&&<div style={{display:'flex',gap:6,alignItems:'center'}}><input type="password" value={pwInput} onChange={e=>setPwInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&tryAdmin()} placeholder="パスワード" style={{fontSize:13,padding:'6px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:'var(--surface)',color:'var(--text)',outline:'none',width:140}}/><button className="btn btn-p" style={{padding:'6px 12px',fontSize:12}} onClick={tryAdmin}>確認</button></div>}
+    </div>
+    <div style={{overflowX:'auto',borderRadius:'var(--r)',border:'1px solid var(--border)'}}>
+      <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:580}}>
+        <thead><tr style={{background:'var(--s2)',borderBottom:'2px solid var(--border)'}}>
+          <th style={{padding:'6px 6px',textAlign:'left',fontSize:10,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>日付</th>
+          <th style={{padding:'6px 8px',textAlign:'left',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>患者名</th>
+          <th style={{padding:'6px 8px',textAlign:'left',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>担当</th>
+          <th style={{padding:'6px 8px',textAlign:'left',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>種別</th>
+          <th style={{padding:'6px 8px',textAlign:'left',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>技工物</th>
+          <th style={{padding:'6px 8px',textAlign:'left',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>備考</th>
+          <th style={{padding:'8px',textAlign:'center',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>検査送信</th>
+          <th style={{padding:'8px',textAlign:'center',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>orthocom</th>
+          <th style={{padding:'8px',textAlign:'center',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>back up</th>
+          <th style={{padding:'8px',textAlign:'center',fontSize:11,color:'var(--t2)',fontWeight:600,whiteSpace:'nowrap'}}>確認済み</th>
+          {adminMode&&<th style={{padding:'8px',fontSize:11,color:'var(--rt)',fontWeight:600}}></th>}
+        </tr></thead>
+        <tbody>
+          {order.length===0
+            ?<tr><td colSpan={10} style={{textAlign:'center',padding:'2rem',color:'var(--t3)'}}>データなし</td></tr>
+            :order.flatMap(pid=>{
+              const g=grouped[pid];
+              const allCats=[...new Set(g.recs.flatMap(r=>getRC(r)))];
+              const mainCat=allCats[0]||'その他';
+              const borderCol=CCOL[mainCat]||'var(--b2)';
+              return g.recs.map((r,ri)=>{
+                const rc=getRC(r);
+                const needsK=rc.includes('精密検査')||rc.includes('最終検査');
+                const rowBg=r.chk_datachecked?'#f0fdf4':ri%2===0?'var(--surface)':'#fafaf9';
+                return <tr key={r.id} style={{background:rowBg,borderBottom:'1px solid var(--border)',borderLeft:ri===0?'3px solid '+borderCol:'3px solid transparent'}}>
+                  <td style={{padding:'6px',color:'var(--t3)',fontSize:10,whiteSpace:'nowrap'}}>{r.date}</td>
+                  <td style={{padding:'6px 8px',fontWeight:700,whiteSpace:'nowrap'}}>
+                    {ri===0?<div><div>{g.name}</div><div style={{fontSize:10,color:'var(--t3)'}}>{g.pid}</div></div>:''}
+                  </td>
+                  <td style={{padding:'8px',whiteSpace:'nowrap'}}><StaffBadge staff={r.staff}/></td>
+                  <td style={{padding:'6px 8px'}}>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:2}}>
+                      {rc.map(c=>{const col=CCOL[c]||'#9b948e';return <span key={c} style={{fontSize:10,padding:'1px 5px',borderRadius:8,background:col+'18',border:'1px solid '+col+'40',color:col,fontWeight:600,whiteSpace:'nowrap'}}>{c}</span>;})}
+                    </div>
+                  </td>
+                  <td style={{padding:'6px 8px',fontSize:11,color:'var(--t2)'}}>{(r.techs||[]).join('・')||'—'}</td>
+                  <td style={{padding:'6px 8px',fontSize:11,color:'var(--amt)'}}>{r.note&&r.note!=='未記入'?r.note:'—'}</td>
+                  {KENSA_CHK.map(k=><td key={k} style={{padding:'8px',textAlign:'center'}}>
+                    {needsK?<input type="checkbox" checked={!!r.checks[k]} onChange={e=>updChk(r.id,k,e.target.checked)} style={{width:16,height:16,accentColor:'var(--green)',cursor:'pointer'}}/>:<span style={{color:'var(--t3)',fontSize:11}}>—</span>}
+                  </td>)}
+                  <td style={{padding:'8px',textAlign:'center'}}>
+                    <input type="checkbox" checked={!!r.chk_datachecked} onChange={e=>updDC(r.id,e.target.checked)} style={{width:16,height:16,accentColor:'var(--accent)',cursor:'pointer'}}/>
+                  </td>
+                  {adminMode&&<td style={{padding:'6px 8px',textAlign:'center'}}>
+                    <button className="btn btn-d" onClick={()=>{if(!confirm(r.patient_name+'のデータを削除しますか？\n\nこの操作は取り消せません。'))return;const n=db.filter(x=>x.id!==r.id);setDb(n);saveLocal(n);sbFetch('records?id=eq.'+r.id,'DELETE').catch(()=>{});}}>削除</button>
+                  </td>}
+                </tr>;
+              });
+            })
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>;
+}
+
+// ---- IteroWeekGrid ----
+const IWEEK_SECTIONS = [
+  { key:'精密検査',      label:'精密検査',      color:'#3b82f6', match: r=>r.checks['精密検査'] },
+  { key:'最終検査',      label:'最終検査',      color:'#0d9488', match: r=>r.checks['最終検査'] },
+  { key:'技工物',        label:'技工物',        color:'#ea580c', match: r=>r.cats.includes('技工物') },
+  { key:'再iTero',       label:'再iTero',       color:'#d97706', match: r=>r.cats.includes('再iTero') },
+  { key:'追加アライナー',label:'追加アライナー', color:'#7c3aed', match: r=>r.cats.includes('追加アライナー') },
+  { key:'その他',        label:'その他',        color:'#9b948e', match: r=>r.cats.includes('その他')&&!r.checks['精密検査']&&!r.checks['最終検査']&&!r.cats.includes('技工物')&&!r.cats.includes('再iTero')&&!r.cats.includes('追加アライナー') },
+];
+const CC_MAP = {'精密検査':'#3b82f6','最終検査':'#0d9488','技工物':'#ea580c','追加アライナー':'#7c3aed','再iTero':'#d97706'};
+
+function IteroWeekGrid({list, updReady, dayLabel, db, setDb, saveLocal}){
+  return <div>
+    {IWEEK_SECTIONS.map(sec=>{
+      const items = list.filter(sec.match);
+      if(!items.length) return null;
+      return <div key={sec.key} style={{marginBottom:16}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,padding:'5px 10px',background:sec.color+'10',borderRadius:'var(--rs)',borderLeft:'4px solid '+sec.color}}>
+          <span style={{fontSize:12,fontWeight:700,color:sec.color}}>{sec.label}</span>
+          <span style={{fontSize:11,color:sec.color,background:sec.color+'20',padding:'1px 8px',borderRadius:10,fontWeight:600}}>{items.length}件</span>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:8}}>
+          {items.map(r=>{
+            const checked=r.chk_ready;
+            const allCats=[...(r.checks['精密検査']?['精密検査']:[]),...(r.checks['最終検査']?['最終検査']:[]),...(r.cats||[])].filter((v,i,a)=>a.indexOf(v)===i);
+            return <div key={r.id} style={{background:'var(--surface)',border:'1px solid var(--border)',borderLeft:'3px solid '+(checked?'var(--green)':sec.color),borderRadius:'var(--rs)',padding:'8px 10px',opacity:checked?0.65:1}}>
+              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:4}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.patient_name}</div>
+                  <div style={{marginTop:2}}><StaffBadge staff={r.staff}/></div>
+                  {r.techs&&r.techs.length>0&&<div style={{fontSize:10,color:'var(--t2)',marginTop:2}}>{r.techs.join('・')}</div>}
+                  <div style={{fontSize:10,color:'var(--accent)',fontWeight:600,marginTop:3}}>📅 {dayLabel(r.date)}</div>
+                  <div style={{marginTop:4}}><EditBtn r={r} db={db} setDb={setDb} saveLocal={saveLocal}/></div>
+                </div>
+                <label style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2,cursor:'pointer',flexShrink:0}}>
+                  <input type="checkbox" checked={!!checked} onChange={e=>updReady(r.id,e.target.checked)} style={{width:17,height:17,accentColor:'var(--green)',cursor:'pointer'}}/>
+                  <span style={{fontSize:9,color:checked?'var(--gt)':'var(--t3)',whiteSpace:'nowrap'}}>{checked?'確認済':'確認'}</span>
+                </label>
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>;
+    })}
+  </div>;
+}
+
+// ---- IteroWeekTab ----
+function IteroWeekTab({db, updRec, setDb, saveLocal}){
+  const [selDate, setSelDate] = useState(today());
+  const [filter, setFilter] = useState('today');
+  const [pick1, setPick1] = useState('');
+  const [pick2, setPick2] = useState('');
+  const getTargetDates = () => {
+    if(filter==='today')  return [selDate];
+    if(filter==='pick1')  return pick1?[pick1]:[];
+    if(filter==='pick2')  return pick2?[pick2]:[];
+    // all: 今日＋選択した日付
+    const dates=[selDate];
+    if(pick1) dates.push(pick1);
+    if(pick2) dates.push(pick2);
+    return [...new Set(dates)];
+  };
+  const targets = getTargetDates();
+  const list = db.filter(r=>!r.chk_mikiroku&&r.date&&targets.includes(r.date))
+    .sort((a,b)=>{ if(a.date!==b.date)return b.date.localeCompare(a.date); return a.patient_name.localeCompare(b.patient_name); });
+  const updReady = (id, val) => { updRec(id,{chk_ready:val}); sbFetch('records?id=eq.'+id,'PATCH',{chk_ready:val}); };
+  const FILTER_BTNS = [{k:'today',label:'今日'},{k:'pick1',label:'日付1'},{k:'pick2',label:'日付2'},{k:'all',label:'3日分'}];
+  const dayLabel = d => { const diff=Math.round((new Date(selDate)-new Date(d))/(1000*60*60*24)); if(diff===0)return '今日';return d; };
+  const CCOL2 = {'再iTero':'#d97706','追加アライナー':'#7c3aed'};
+  return <div>
+    <div style={{marginBottom:12}}>
+      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+        <span style={{fontSize:12,color:'var(--t2)'}}>今日:</span>
+        <input type="date" value={selDate} onChange={e=>setSelDate(e.target.value)} style={{fontSize:13,padding:'6px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:'var(--surface)',color:'var(--text)',outline:'none'}}/>
+        <button className={"fb"+(filter==='today'?' on':'')} style={filter==='today'?{background:'var(--accent)',color:'#fff',borderColor:'var(--accent)'}:{}} onClick={()=>setFilter('today')}>今日のみ</button>
+        <button className={"fb"+(filter==='all'?' on':'')} style={filter==='all'?{background:'var(--accent)',color:'#fff',borderColor:'var(--accent)'}:{}} onClick={()=>setFilter('all')}>まとめて表示</button>
+      </div>
+      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:4,flexWrap:'wrap'}}>
+        <span style={{fontSize:12,color:'var(--t2)'}}>日付1:</span>
+        <input type="date" value={pick1} onChange={e=>{setPick1(e.target.value);setFilter('pick1');}} style={{fontSize:13,padding:'6px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:filter==='pick1'?'var(--abg)':'var(--surface)',color:'var(--text)',outline:'none'}}/>
+        <span style={{fontSize:12,color:'var(--t2)'}}>日付2:</span>
+        <input type="date" value={pick2} onChange={e=>{setPick2(e.target.value);setFilter('pick2');}} style={{fontSize:13,padding:'6px 10px',border:'1px solid var(--b2)',borderRadius:'var(--rs)',background:filter==='pick2'?'var(--abg)':'var(--surface)',color:'var(--text)',outline:'none'}}/>
+      </div>
+    </div>
+    <div style={{fontSize:12,color:'var(--t2)',marginBottom:8}}>{list.length}件</div>
+    {list.length===0
+      ? <p className="empty">該当するデータはありません</p>
+      : <IteroWeekGrid list={list} updReady={updReady} dayLabel={dayLabel} db={db} setDb={setDb} saveLocal={saveLocal}/>
+    }
+  </div>;
+}
+
+// ---- TodayTab ----
+function TodayTab({db, updRec}){
+  const fmtDate = d => d.toISOString().slice(0,10);
+  const addDays = (base, n) => { const d=new Date(base); d.setDate(d.getDate()+n); return fmtDate(d); };
+  const t = today();
+  const [date1, setDate1] = useState(t);
+  const [date2, setDate2] = useState(addDays(new Date(t),1));
+  const [date3, setDate3] = useState(addDays(new Date(t),2));
+  const [show, setShow] = useState({1:true,2:false,3:false});
+  const [showIsogu, setShowIsogu] = useState(false);
+
+  const togShow = k => setShow(s=>({...s,[k]:!s[k]}));
+
+  const targets = [show[1]&&date1, show[2]&&date2, show[3]&&date3].filter(Boolean);
+  const list = showIsogu
+    ? db.filter(r=>!r.chk_mikiroku&&!isRecordDone(r)&&r.cats.includes('技工物')&&r.chk_isogu).sort((a,b)=>(a.setdate||'').localeCompare(b.setdate||''))
+    : db.filter(r=>!r.chk_mikiroku&&!isRecordDone(r)&&r.cats.includes('技工物')&&r.setdate&&targets.includes(r.setdate)).sort((a,b)=>a.setdate.localeCompare(b.setdate));
+
+  const updReady = (id, val) => { updRec(id,{chk_ready:val}); sbFetch('records?id=eq.'+id,'PATCH',{chk_ready:val}); };
+
+  const dayLabel = d => {
+    if(d===date1) return '日付①';
+    if(d===date2) return '日付②';
+    if(d===date3) return '日付③';
+    return d;
+  };
+
+  const DatePicker = ({num, val, setVal, active}) => {
+    const color = ['#2563c8','#0d9488','#7c3aed'][num-1];
+    return <div style={{display:'flex',alignItems:'center',gap:6,background:active?color+'12':'var(--s2)',border:'2px solid '+(active?color:'var(--b2)'),borderRadius:10,padding:'6px 10px',cursor:'pointer'}} onClick={()=>togShow(num)}>
+      <span style={{fontSize:13,fontWeight:700,color:active?color:'var(--t3)',minWidth:14}}>{'①②③'[num-1]}</span>
+      <input type="date" value={val} onChange={e=>{setVal(e.target.value);if(!active)setShow(s=>({...s,[num]:true}));}} onClick={e=>e.stopPropagation()} style={{fontSize:13,border:'none',background:'transparent',color:active?color:'var(--t2)',outline:'none',fontWeight:active?700:400,width:120}}/>
+      <span style={{fontSize:11,color:active?color:'var(--t3)',fontWeight:600}}>{active?'表示中':'非表示'}</span>
+    </div>;
+  };
+
+  return <div>
+    <div style={{marginBottom:12}}>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+        <DatePicker num={1} val={date1} setVal={setDate1} active={show[1]&&!showIsogu}/>
+        <DatePicker num={2} val={date2} setVal={setDate2} active={show[2]&&!showIsogu}/>
+        <DatePicker num={3} val={date3} setVal={setDate3} active={show[3]&&!showIsogu}/>
+      </div>
+      <button className={"fb"+(showIsogu?' on':'')} style={showIsogu?{background:'var(--org)',color:'#fff',borderColor:'var(--org)'}:{color:'var(--ot)',borderColor:'#fed7aa'}} onClick={()=>setShowIsogu(v=>!v)}>🚨 急ぎのみ</button>
+    </div>
+    <div style={{fontSize:13,color:'var(--t2)',marginBottom:8}}>{list.length}件</div>
+    {list.length===0
+      ? <p className="empty">該当する技工物はありません</p>
+      : <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+        {list.map(r=>{
+          const ready=r.chk_ready;
+          const dLabel=dayLabel(r.setdate);
+          const dColor=r.setdate===date1?'#2563c8':r.setdate===date2?'#0d9488':'#7c3aed';
+          return <div key={r.id} className="rc" style={{borderLeft:'4px solid '+(ready?'var(--green)':'var(--amber)'),opacity:ready?0.7:1,marginBottom:0}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div className="rn" style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                  <span>{r.patient_name}</span>
+                  <StaffBadge staff={r.staff}/>
+                  {r.chk_isogu&&<Bdg cls="b-org">🚨急ぎ</Bdg>}
+                </div>
+                <div className="rm">{r.patient_id}</div>
+                <div className="rm">{r.techs.join('・')||'—'}</div>
+                <div className="rm" style={{color:dColor,fontWeight:700}}>📅 {dLabel}　{r.setdate}</div>
+              </div>
+              <label style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4,fontSize:12,cursor:'pointer',padding:'6px 8px',background:ready?'var(--gbg)':'var(--s2)',border:'1px solid '+(ready?'#bbf7d0':'var(--border)'),borderRadius:'var(--rs)',color:ready?'var(--gt)':'var(--t2)',whiteSpace:'nowrap',marginLeft:6,flexShrink:0}}>
+                <input type="checkbox" checked={!!ready} onChange={e=>updReady(r.id,e.target.checked)} style={{width:16,height:16,accentColor:'var(--green)',cursor:'pointer'}}/>
+                {ready?'済':'用意'}
+              </label>
+            </div>
+          </div>;
+        })}
+        </div>
+    }
+  </div>;
+}
+
+
+// ---- ReportModal ----
+function ReportModal({onClose}){
+  const [text,setText]=useState('');
+  const [reporter,setReporter]=useState('');
+  const [msg,setMsg]=useState(null);
+
+  const send=async()=>{
+    if(!text.trim()){setMsg({err:'内容を入力してください'});return;}
+    setMsg({info:'送信中...'});
+    try{
+      await sbFetch('bug_reports','POST',{
+        reporter:reporter||'匿名',
+        content:text,
+        created_at:new Date().toISOString(),
+        resolved:false
+      });
+      setMsg({ok:'報告を送信しました！ありがとうございます。'});
+      setTimeout(()=>onClose(),2000);
+    }catch(e){
+      // Supabase テーブルがない場合はローカル保存
+      const reports=JSON.parse(localStorage.getItem('bug_reports')||'[]');
+      reports.push({reporter:reporter||'匿名',content:text,created_at:new Date().toISOString()});
+      localStorage.setItem('bug_reports',JSON.stringify(reports));
+      setMsg({ok:'報告を保存しました！'});
+      setTimeout(()=>onClose(),2000);
+    }
+  };
+
+  return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+    <div style={{background:'var(--surface)',width:'100%',maxWidth:600,borderRadius:'16px 16px 0 0',padding:20,paddingBottom:'calc(20px + env(safe-area-inset-bottom,0px))'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:700}}>🐛 不具合・要望の報告</div>
+        <button onClick={onClose} style={{fontSize:18,background:'none',border:'none',cursor:'pointer',color:'var(--t2)'}}>✕</button>
+      </div>
+      <div className="f" style={{marginBottom:10}}>
+        <label>名前</label>
+        <select value={reporter} onChange={e=>setReporter(e.target.value)} style={{fontSize:14,borderRadius:'var(--rs)',border:'1px solid var(--b2)',padding:'9px 10px',background:'var(--s2)',color:'var(--text)',outline:'none',WebkitAppearance:'none'}}>
+          <option value="">選択</option>{STAFF.map(s=><option key={s}>{s}</option>)}
+        </select>
+      </div>
+      <div className="f" style={{marginBottom:10}}>
+        <label>内容</label>
+        <textarea value={text} onChange={e=>setText(e.target.value)} placeholder="例: ○○タブで△△が表示されない" rows={4} style={{fontSize:14,borderRadius:'var(--rs)',border:'1px solid var(--b2)',padding:'9px 10px',background:'var(--s2)',color:'var(--text)',outline:'none',resize:'vertical',width:'100%'}}/>
+      </div>
+      {msg&&<div className={"al "+(msg.ok?'al-ok':msg.err?'al-err':'')} style={msg.info?{background:'var(--s2)',color:'var(--t2)'}:{}}>{msg.ok||msg.err||msg.info}</div>}
+      <button className="btn btn-p" style={{width:'100%'}} onClick={send}>送信する</button>
+    </div>
+  </div>;
+}
+
+// ---- DashTab ----
+function DashTab({db}){
+  const m=ym();
+  const [reports,setReports]=useState([]);
+  const [loadingR,setLoadingR]=useState(false);
+
+  const loadReports=async()=>{
+    setLoadingR(true);
+    try{
+      const r=await sbFetch('bug_reports?order=created_at.desc&limit=20');
+      if(r) setReports(r);
+    }catch(e){}
+    setLoadingR(false);
+  };
+
+  useEffect(()=>{loadReports();},[]);
+
+  const resolveReport=async(id)=>{
+    await sbFetch('bug_reports?id=eq.'+id,'PATCH',{resolved:true});
+    setReports(r=>r.map(x=>x.id===id?{...x,resolved:true}:x));
+  };
+
+  const recent=db.filter(r=>!r.chk_mikiroku&&!isRecordDone(r)).slice(0,10);
+  return <div>
+    <div className="metrics">
+      <div className="met"><div className="ml">総件数</div><div className="mv">{db.length}</div></div>
+      <div className="met"><div className="ml">今月登録</div><div className="mv">{db.filter(r=>(r.date||'').startsWith(m)).length}</div></div>
+      <div className="met"><div className="ml">技工物</div><div className="mv">{db.filter(r=>r.cats.includes('技工物')).length}</div></div>
+      <div className="met"><div className="ml">未記入</div><div className="mv" style={{color:'var(--red)'}}>{db.filter(r=>r.chk_mikiroku).length}</div></div>
+    </div>
+
+    <div style={{fontSize:13,fontWeight:600,marginBottom:8,marginTop:8}}>📋 担当者別 未記入登録数</div>
+    <div style={{background:'var(--s2)',borderRadius:'var(--rs)',padding:'10px 12px',marginBottom:16}}>
+      {STAFF.map(s=>{
+        const total=db.filter(r=>r.chk_was_mik&&r.staff===s).length;
+        const current=db.filter(r=>r.chk_mikiroku&&!r.hidden&&r.staff===s).length;
+        if(total===0&&current===0) return null;
+        const col=STAFF_COLOR[s]||'#9b948e';
+        return <div key={s} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 0',borderBottom:'1px solid var(--border)'}}>
+          <span style={{fontSize:12,fontWeight:700,color:col,minWidth:60}}>{s}</span>
+          <div style={{flex:1,background:'var(--border)',borderRadius:4,height:8,overflow:'hidden'}}>
+            <div style={{width:Math.min(100,total*10)+'%',height:'100%',background:col,borderRadius:4}}/>
+          </div>
+          <span style={{fontSize:12,color:'var(--t2)',minWidth:60,textAlign:'right'}}>
+            詳細入力済 {total}件 {current>0&&<span style={{color:'var(--rt)',fontWeight:700}}>/ 未記入中 {current}件</span>}
+          </span>
+        </div>;
+      })}
+    </div>
+    <div style={{fontSize:13,fontWeight:600,marginBottom:8}}>最近の登録（進行中）</div>
+    {recent.length===0?<p className="empty">なし</p>:recent.map(r=><div key={r.id} className={"rc"+(r.chk_isogu?' icard':'')}>
+      <div className="rn">{r.patient_name} {r.chk_isogu&&<Bdg cls="b-org">🚨</Bdg>}</div>
+      <div className="rm">{r.patient_id}　{r.date}　{r.staff||'—'}</div>
+      <div className="rm">{r.cats.join('・')}　{r.techs.join('・')}</div>
+    </div>)}
+    <div style={{fontSize:13,fontWeight:600,marginBottom:8,marginTop:16}}>🐛 不具合報告</div>
+    <button className="btn" style={{fontSize:12,padding:'5px 12px',marginBottom:10}} onClick={loadReports}>{loadingR?'読み込み中...':'更新'}</button>
+    {reports.length===0
+      ?<p className="empty">報告なし</p>
+      :reports.map(r=><div key={r.id} className="rc" style={{borderLeft:'4px solid '+(r.resolved?'var(--green)':'var(--red)'),opacity:r.resolved?0.6:1}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:12,fontWeight:600,color:r.resolved?'var(--gt)':'var(--rt)'}}>{r.resolved?'✅ 解決済み':'🔴 未解決'}</div>
+            <div style={{fontSize:13,marginTop:4}}>{r.content}</div>
+            <div style={{fontSize:11,color:'var(--t2)',marginTop:3}}>{r.reporter||'匿名'}　{r.created_at?r.created_at.slice(0,16).replace('T',' '):''}</div>
+          </div>
+          {!r.resolved&&<button className="btn" style={{fontSize:11,padding:'4px 10px',background:'var(--gbg)',color:'var(--gt)',borderColor:'#bbf7d0',marginLeft:8,whiteSpace:'nowrap'}} onClick={()=>resolveReport(r.id)}>解決済みにする</button>}
+        </div>
+      </div>)
+    }
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+
+</script>
+</body>
+</html>
